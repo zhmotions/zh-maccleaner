@@ -1,0 +1,15 @@
+# build output
+ZH MacCleaner.app/
+ZH Cleaner.app/
+dist/
+icon.iconset/
+*.zip
+*.dmg
+
+# python
+__pycache__/
+*.pyc
+.venv/
+
+# macOS
+.DS_Store
