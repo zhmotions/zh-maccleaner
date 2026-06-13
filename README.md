@@ -39,9 +39,12 @@ Auto-scans on launch and shows sizes **before** you clean.
 
 ## Install
 
-1. Download `ZH-MacCleaner-1.0-macOS.zip` (or `.dmg`) from [**Releases**](../../releases).
-2. Unzip → drag **ZH MacCleaner.app** to `/Applications`.
-3. First launch: **right-click → Open** (unsigned app, Gatekeeper asks once).
+Download from **[zhmotions.com/maccleaner](https://www.zhmotions.com/maccleaner)** →
+
+1. Open the **.dmg** → drag **ZH MacCleaner** to `/Applications`.
+2. First launch: **right-click → Open** (unsigned app, Gatekeeper asks once).
+
+The app checks zhmotions.com for updates automatically.
 
 > **Tip:** For full cache cleanup, grant Full Disk Access:
 > System Settings → Privacy & Security → Full Disk Access → **+** → add ZH MacCleaner.

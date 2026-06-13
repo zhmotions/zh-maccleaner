@@ -8,11 +8,11 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 cd "$HERE"
 
 VER="1.0"
-APP="ZH MacCleaner.app"
-mkdir -p dist
+APP="dist/ZH MacCleaner.app"
 
-echo "▸ Building app…"
+echo "▸ Building app (PyInstaller, self-contained)…"
 bash build_app.sh >/dev/null
+mkdir -p dist
 
 echo "▸ Zipping (ditto, keeps app bundle intact)…"
 rm -f "dist/ZH-MacCleaner-${VER}-macOS.zip"

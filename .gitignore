@@ -2,7 +2,11 @@
 ZH MacCleaner.app/
 ZH Cleaner.app/
 dist/
+build/
 icon.iconset/
+AppIcon.icns
+*.spec
+.build-venv/
 *.zip
 *.dmg
 

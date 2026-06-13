@@ -17,7 +17,12 @@ import tkinter as tk
 from tkinter import messagebox
 
 HOME = Path.home()
-APP_DIR = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
+if getattr(sys, "frozen", False):                       # PyInstaller bundle
+    APP_DIR = Path(getattr(sys, "_MEIPASS", Path.cwd()))
+elif "__file__" in globals():
+    APP_DIR = Path(__file__).resolve().parent
+else:
+    APP_DIR = Path.cwd()
 
 APP_VERSION = "1.0"
 SITE        = "https://www.zhmotions.com"
@@ -28,14 +33,14 @@ UPDATE_SOURCES = [
     ("github",    "https://api.github.com/repos/zhmotions/zh-maccleaner/releases/latest", "gh"),
 ]
 
-# ── Apple-style neutral palette + ZH maroon/gold accents ──
+# ── Monochromatic palette — every tone is a shade of ONE maroon hue ──
 C = {
-    "BG":"#f5f5f7", "SIDEBAR":"#ececef", "HEADER":"#ffffff",
-    "SURF":"#ffffff", "SURF2":"#e6e6ea", "BORDER":"#e3e3e6",
+    "BG":"#f7f1f2", "SIDEBAR":"#ead9dd", "HEADER":"#fdfbfb",
+    "SURF":"#ffffff", "SURF2":"#ecdade", "BORDER":"#dfc8cd",
     "MAROON":"#7A1F2B", "MAROON2":"#9c2a3a",
-    "GOLD":"#7A1F2B", "GOLD2":"#9c2a3a",   # monochromatic: sizes/accents = maroon
-    "TEXT":"#1d1d1f", "MUTED":"#86868b",
-    "GREEN":"#2a9d56", "RED":"#d23b30",
+    "GOLD":"#7A1F2B", "GOLD2":"#9c2a3a",   # accents = maroon
+    "TEXT":"#2c1014", "MUTED":"#9a767c",   # darkest maroon / muted maroon
+    "GREEN":"#7A1F2B", "RED":"#9c2a3a",
 }
 UIFONT = "SF Pro Text"
 MONO   = "SF Mono"
@@ -155,6 +160,31 @@ def find_duplicates(dirs, min_size=1024*1024):
     groups.sort(key=lambda g: g[0]*len(g[1]), reverse=True)
     return groups
 
+def fda_granted():
+    """True if the app has Full Disk Access (can read the TCC database)."""
+    try:
+        with open(HOME/"Library/Application Support/com.apple.TCC/TCC.db", "rb") as f:
+            f.read(1)
+        return True
+    except PermissionError:
+        return False
+    except Exception:
+        return True   # file missing / other — don't nag
+
+def free_mem_bytes():
+    """Approx available memory (free + inactive + speculative pages)."""
+    try:
+        ps = int(subprocess.run(["sysctl","-n","hw.pagesize"], capture_output=True, text=True).stdout.strip() or 16384)
+        out = subprocess.run(["vm_stat"], capture_output=True, text=True).stdout
+        free = inact = spec = 0
+        for ln in out.splitlines():
+            if "Pages free" in ln: free = int(ln.split(":")[1].strip().rstrip("."))
+            elif "Pages inactive" in ln: inact = int(ln.split(":")[1].strip().rstrip("."))
+            elif "Pages speculative" in ln: spec = int(ln.split(":")[1].strip().rstrip("."))
+        return (free + inact + spec) * ps
+    except Exception:
+        return 0
+
 def run_admin(shell_cmd):
     """Run a shell command with a macOS admin-password prompt."""
     sc = shell_cmd.replace('"', '\\"')
@@ -204,7 +234,7 @@ class Tip:
         y = self.w.winfo_rooty() + self.w.winfo_height() + 6
         self.tip = tk.Toplevel(self.w); self.tip.wm_overrideredirect(True)
         self.tip.wm_geometry(f"+{x}+{y}")
-        tk.Label(self.tip, text=self.text, bg="#1d1d1f", fg="#ffffff", font=(UIFONT, 10),
+        tk.Label(self.tip, text=self.text, bg="#2c1014", fg="#ffffff", font=(UIFONT, 10),
                  padx=9, pady=6, justify="left", wraplength=280).pack()
     def _hide(self, _e):
         if self.tip: self.tip.destroy(); self.tip = None
@@ -215,7 +245,7 @@ class Cleaner(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("ZH MacCleaner")
-        self.geometry("820x620"); self.minsize(740, 560)
+        self.geometry("880x760"); self.resizable(False, False)   # fixed size — fits all buttons
         self.configure(bg=C["BG"])
         self.q = queue.Queue()
         self.sizes = {}            # key -> bytes
@@ -267,7 +297,7 @@ class Cleaner(tk.Tk):
                          font=(UIFONT, 13), anchor="w", cursor="pointinghand", padx=12, pady=11)
             b.pack(fill="x", padx=8, pady=2)
             b.bind("<Button-1>", lambda e,k=key: self.show_view(k))
-            b.bind("<Enter>", lambda e,k=key,w=b: (w.config(bg="#e0e0e4") if k!=self.active_view else None))
+            b.bind("<Enter>", lambda e,k=key,w=b: (w.config(bg="#e3d0d4") if k!=self.active_view else None))
             b.bind("<Leave>", lambda e,k=key,w=b: (w.config(bg=C["SIDEBAR"]) if k!=self.active_view else None))
             self.nav_btns[key] = b
         tk.Label(side, text="v1.0 · safe mode", bg=C["SIDEBAR"], fg=C["BORDER"],
@@ -293,8 +323,23 @@ class Cleaner(tk.Tk):
     def _build_cleanup(self):
         v = tk.Frame(self.content, bg=C["BG"]); self.views["cleanup"] = v
 
+        # Full Disk Access banner (only if not granted)
+        if not fda_granted():
+            ban = tk.Frame(v, bg=C["SURF2"], highlightbackground=C["MAROON"], highlightthickness=1)
+            ban.pack(fill="x", padx=22, pady=(12,0))
+            ban.columnconfigure(1, weight=1)
+            tk.Label(ban, text="🔒", bg=C["SURF2"], font=(UIFONT, 18)
+                     ).grid(row=0, column=0, rowspan=2, padx=(12,6), pady=10)
+            tk.Label(ban, text="Enable Full Disk Access", bg=C["SURF2"], fg=C["MAROON"], anchor="w",
+                     font=(UIFONT, 12, "bold")).grid(row=0, column=1, sticky="w", pady=(10,0))
+            tk.Label(ban, text="Lets ZH MacCleaner read & clear all caches.", bg=C["SURF2"],
+                     fg=C["MUTED"], anchor="w", font=(UIFONT, 10)).grid(row=1, column=1, sticky="w", pady=(0,10))
+            tk.Button(ban, text="Open Settings", command=self.open_fda, highlightbackground=C["SURF2"],
+                      fg=C["MAROON"], relief="flat", bd=0, padx=12, pady=5, cursor="pointinghand",
+                      font=(UIFONT, 11, "bold")).grid(row=0, column=2, rowspan=2, padx=12)
+
         # Gauge
-        top = tk.Frame(v, bg=C["BG"]); top.pack(fill="x", pady=(24,8))
+        top = tk.Frame(v, bg=C["BG"]); top.pack(fill="x", pady=(12,4))
         self.gauge = tk.Canvas(top, width=176, height=176, bg=C["BG"], highlightthickness=0)
         self.gauge.pack()
         self._draw_gauge()
@@ -327,7 +372,7 @@ class Cleaner(tk.Tk):
                                   font=(UIFONT, 11)); self.trash_lbl.pack(anchor="w", pady=(8,0))
 
         # Buttons
-        bar = tk.Frame(v, bg=C["BG"]); bar.pack(fill="x", padx=22, pady=14)
+        bar = tk.Frame(v, bg=C["BG"]); bar.pack(fill="x", padx=22, pady=14, side="bottom")
         self.rescan_btn = self._btn(bar, "↻  Rescan", self.scan_all, "ghost"); self.rescan_btn.pack(side="left")
         self.clean_btn  = self._btn(bar, "✦  Clean Selected", self.clean_sel, "gold"); self.clean_btn.pack(side="left", padx=8)
         self.trash_btn  = self._btn(bar, "🗑  Empty Trash", self.empty_trash, "ghost"); self.trash_btn.pack(side="right")
@@ -361,25 +406,50 @@ class Cleaner(tk.Tk):
                          padx=16, pady=9, cursor="pointinghand", activebackground=C["GOLD2"],
                          font=(UIFONT, 12, "bold"))
 
-    def _draw_gauge(self):
+    def open_fda(self):
+        subprocess.run(["open",
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"])
+        self.q.put(("status", "Add ZH MacCleaner in the list, then relaunch the app."))
+
+    def _draw_gauge(self, frac=None, total=None):
         g = self.gauge; g.delete("all")
-        x0,y0,x1,y1 = 14,14,162,162; cx,cy = 88,88
+        x0,y0,x1,y1 = 16,16,160,160; cx,cy = 88,88
         g.create_oval(x0,y0,x1,y1, outline=C["SURF2"], width=10)   # track
-        total = sum(self.sizes.values())
-        if total > 0:
-            start = 90.0
-            for k in CATEGORIES:
-                val = self.sizes.get(k, 0)
-                if val <= 0: continue
-                ext = -359.0 * (val/total)
-                g.create_arc(x0,y0,x1,y1, start=start, extent=ext, style="arc",
-                             outline=SEG[k], width=10)
-                start += ext
-            center = human(total)
-        else:
-            center = "—"
-        g.create_text(cx, cy-13, text=center, fill=C["TEXT"], font=(UIFONT, 25, "bold"))
+        real = sum(self.sizes.values())
+        if frac is None:                      # final state — segmented ring
+            if real > 0:
+                start = 90.0
+                for k in CATEGORIES:
+                    val = self.sizes.get(k, 0)
+                    if val <= 0: continue
+                    g.create_arc(x0,y0,x1,y1, start=start, extent=-359.0*(val/real),
+                                 style="arc", outline=SEG[k], width=10)
+                    start += -359.0*(val/real)
+            shown = real
+        else:                                 # animating — single growing arc
+            if frac > 0:
+                g.create_arc(x0,y0,x1,y1, start=90, extent=-359.0*min(frac,1.0),
+                             style="arc", outline=C["MAROON"], width=10)
+            shown = real if total is None else total
+        txt = human(shown) if (real > 0 or total is not None) else "—"
+        fs = 23 if len(txt) <= 7 else (19 if len(txt) <= 9 else 16)
+        g.create_text(cx, cy-11, text=txt, fill=C["TEXT"], font=(UIFONT, fs, "bold"))
         g.create_text(cx, cy+17, text="RECLAIMABLE", fill=C["MUTED"], font=(UIFONT, 9, "bold"))
+
+    def _animate_gauge(self):
+        target = sum(self.sizes.values())
+        if target <= 0:
+            self._draw_gauge(); return
+        steps = 24
+        def step(i=[0]):
+            i[0] += 1
+            e = 1 - (1 - i[0]/steps)**3          # ease-out
+            if i[0] >= steps:
+                self._draw_gauge()                # settle to real segmented ring
+            else:
+                self._draw_gauge(frac=e, total=target*e)
+                self.after(20, step)
+        step()
 
     def show_view(self, name):
         self.active_view = name
@@ -406,6 +476,8 @@ class Cleaner(tk.Tk):
                 elif kind == "dupes":  self._render_dupes(payload)
                 elif kind == "rescan_dupes": self.scan_dupes()
                 elif kind == "update": self._show_update(*payload)
+                elif kind == "gauge_anim": self._animate_gauge()
+                elif kind == "maint_done": self._maint_done(*payload)
         except queue.Empty:
             pass
         self.after(80, self._pump)
@@ -436,6 +508,7 @@ class Cleaner(tk.Tk):
             for key,(ico,name,sub,paths) in CATEGORIES.items():
                 tot = sum(dir_size(p) for p in paths if p.exists())
                 self.q.put(("size",(key,tot)))
+            self.q.put(("gauge_anim", None))     # animated reveal
             self.q.put(("status","Scan complete. Review sizes, then Clean Selected."))
             self.q.put(("busy", False))
         threading.Thread(target=run, daemon=True).start()
@@ -575,7 +648,7 @@ class Cleaner(tk.Tk):
             tk.Label(row, text=nm, bg=C["SURF"], fg=C["TEXT"], anchor="w",
                      font=(UIFONT, 12)).grid(row=0, column=0, sticky="w", pady=4)
             tk.Button(row, text="Uninstall", command=lambda n=nm,p=path: self.uninstall_app(n,p),
-                      bg=C["SURF2"], fg=C["RED"], relief="flat", bd=0, padx=10, pady=3,
+                      bg=C["SURF2"], fg=C["MAROON"], relief="flat", bd=0, padx=10, pady=3,
                       cursor="pointinghand", font=(UIFONT, 10, "bold")).grid(row=0, column=1, padx=6)
 
     def uninstall_app(self, name, path):
@@ -663,15 +736,20 @@ class Cleaner(tk.Tk):
         self._title(v, "Maintenance", "Quick system tune-ups (some ask for your password)")
         grid = tk.Frame(v, bg=C["BG"]); grid.pack(fill="x", padx=22, pady=8)
         tools = [
-            ("🧠", "Free Up RAM", "purge inactive memory", lambda: self.maint("purge","Free RAM")),
-            ("🌐", "Flush DNS", "reset DNS cache", lambda: self.maint(
-                "dscacheutil -flushcache; killall -HUP mDNSResponder","Flush DNS")),
-            ("🔦", "Reindex Spotlight", "rebuild search index", lambda: self.maint(
-                "mdutil -E /","Reindex Spotlight")),
-            ("🚀", "Rebuild Launch DB", "fix Open With duplicates", lambda: self.maint(
-                "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -kill -r -domain local -domain user","Rebuild Launch Services", admin=False)),
+            ("🧠", "Free Up RAM", "purge inactive memory",
+             "Frees inactive memory so apps get more RAM. Use when your Mac feels slow or laggy.",
+             lambda: self.maint("/usr/sbin/purge", "Free RAM")),
+            ("🌐", "Flush DNS", "reset DNS cache",
+             "Clears the DNS cache. Fixes websites that won't load or point to an old/wrong server.",
+             lambda: self.maint("/usr/bin/dscacheutil -flushcache; /usr/bin/killall -HUP mDNSResponder", "Flush DNS")),
+            ("🔦", "Reindex Spotlight", "rebuild search index",
+             "Rebuilds the Spotlight search index. Fixes missing files or wrong results in search. Takes a while in the background.",
+             lambda: self.maint("/usr/bin/mdutil -E /", "Reindex Spotlight")),
+            ("🚀", "Rebuild Launch DB", "fix Open With duplicates",
+             "Rebuilds the app database. Fixes duplicate or wrong entries in the “Open With” menu.",
+             lambda: self.maint("/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -kill -r -domain local -domain user", "Rebuild Launch Services", admin=False)),
         ]
-        for i,(ico,name,sub,cmd) in enumerate(tools):
+        for i,(ico,name,sub,tip,cmd) in enumerate(tools):
             card = tk.Frame(grid, bg=C["SURF"], highlightbackground=C["BORDER"], highlightthickness=1)
             card.grid(row=i//2, column=i%2, sticky="nsew", padx=6, pady=6)
             grid.columnconfigure(i%2, weight=1)
@@ -679,18 +757,37 @@ class Cleaner(tk.Tk):
             tk.Label(card, text=name, bg=C["SURF"], fg=C["TEXT"], font=(UIFONT, 13, "bold")).pack()
             tk.Label(card, text=sub, bg=C["SURF"], fg=C["MUTED"], font=(UIFONT, 9)).pack()
             self._btn(card, "Run", cmd, "gold").pack(pady=10)
+            Tip(card, tip)
 
     def maint(self, cmd, label, admin=True):
         if self.busy: return
         self.q.put(("busy", True)); self.q.put(("status", f"{label}…"))
         def run():
+            before = free_mem_bytes() if label == "Free RAM" else None
             if admin: ok, out = run_admin(cmd)
             else:
                 r = subprocess.run(["bash","-c",cmd], capture_output=True, text=True)
-                ok, out = r.returncode==0, (r.stderr or r.stdout).strip()
-            self.q.put(("status", f"{'✅' if ok else '⚠'} {label}: {'done' if ok else out[:60]}"))
+                ok, out = r.returncode == 0, (r.stderr or r.stdout).strip()
+            if label == "Free RAM" and ok:
+                after = free_mem_bytes()
+                gained = after - (before or 0)
+                detail = (f"✅ RAM freed.\n\nAvailable memory now: {human(after)}"
+                          + (f"\nReclaimed: ~{human(gained)}" if gained > 0 else ""))
+            elif ok:
+                detail = f"✅ {label} completed successfully."
+            else:
+                low = (out or "").lower()
+                if "cancel" in low or "-128" in low:
+                    detail = "Cancelled — password not entered."
+                else:
+                    detail = f"⚠ {label} failed.\n\n{out[:160] or 'Unknown error.'}"
+            self.q.put(("maint_done", (label, ok, detail)))
+            self.q.put(("status", f"{'✅' if ok else '⚠'} {label}: {'done' if ok else 'failed'}"))
             self.q.put(("busy", False))
         threading.Thread(target=run, daemon=True).start()
+
+    def _maint_done(self, label, ok, detail):
+        (messagebox.showinfo if ok else messagebox.showwarning)("ZH MacCleaner — " + label, detail)
 
     # ══ HELP & ABOUT ══
     def _build_help(self):
@@ -717,8 +814,12 @@ class Cleaner(tk.Tk):
                 "folders) that normally stay behind when you drag an app to the Trash.")
         section("👯  Duplicates", "Finds identical files (same content). Keeps the first copy, lets you "
                 "trash the extras to reclaim space.")
-        section("🛠  Maintenance", "One-click tune-ups: free up RAM, flush DNS, reindex Spotlight. "
-                "Some ask for your Mac password — that's normal for system tasks.")
+        section("🛠  Maintenance — what each tool does",
+                "•  Free Up RAM — purges inactive memory so apps get more free RAM. Use when your Mac feels slow.\n"
+                "•  Flush DNS — clears the DNS cache. Fixes sites that won't load or point to an old server.\n"
+                "•  Reindex Spotlight — rebuilds the search index. Fixes Spotlight missing files or wrong results.\n"
+                "•  Rebuild Launch DB — fixes duplicate or wrong “Open With” app entries.\n\n"
+                "Some ask for your Mac password (normal for system tasks). You get a popup with the result.")
 
         section("🔒  Is it safe?", "Yes. ZH MacCleaner only touches a fixed list of safe user folders. "
                 "Caches/logs are rebuilt by macOS; your own files go to the Trash so you can restore them. "
