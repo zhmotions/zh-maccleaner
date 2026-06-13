@@ -38,6 +38,9 @@ LIC_FILE      = HOME/".config/zhmaccleaner/license.json"
 PRO_FEATURES  = {"uninstall", "dupes", "maint"}     # locked until Pro
 GRACE_DAYS    = 14                                  # offline grace after last good check
 
+UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
+      "(KHTML, like Gecko) Version/17.0 Safari/605.1.15")   # Cloudflare blocks bot UAs
+
 def device_id():
     try:
         out = subprocess.run(["ioreg","-rd1","-c","IOPlatformExpertDevice"],
@@ -850,7 +853,7 @@ class Cleaner(tk.Tk):
             body = urllib.parse.urlencode({
                 "key": key, "app": "maccleaner", "device": device_id(), "v": APP_VERSION}).encode()
             req = urllib.request.Request(LICENSE_URL, data=body, headers={
-                "User-Agent": "ZHMacCleaner",
+                "User-Agent": UA,
                 "Content-Type": "application/x-www-form-urlencoded"})   # so PHP fills $_POST
             data = json.loads(urllib.request.urlopen(req, timeout=10).read().decode())
             return bool(data.get("valid")), (data.get("plan") or "pro"), (data.get("message") or "")
@@ -986,7 +989,7 @@ class Cleaner(tk.Tk):
         def run():
             for name, url, kind in UPDATE_SOURCES:
                 try:
-                    req = urllib.request.Request(url, headers={"User-Agent": "ZHMacCleaner"})
+                    req = urllib.request.Request(url, headers={"User-Agent": UA})
                     data = json.loads(urllib.request.urlopen(req, timeout=8).read().decode())
                     if kind == "zhm":
                         latest = str(data.get("version", "")).strip().lstrip("v")
