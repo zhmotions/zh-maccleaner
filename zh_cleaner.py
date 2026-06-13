@@ -11,7 +11,7 @@ Safety:
 """
 
 import os, sys, threading, queue, time, subprocess, shutil, hashlib, plistlib, json
-import urllib.request
+import urllib.request, urllib.parse
 from pathlib import Path
 import tkinter as tk
 from tkinter import messagebox
@@ -32,6 +32,23 @@ UPDATE_SOURCES = [
     ("zhmotions", "https://www.zhmotions.com/maccleaner/version.json", "zhm"),
     ("github",    "https://api.github.com/repos/zhmotions/zh-maccleaner/releases/latest", "gh"),
 ]
+
+# ── Licensing: free app, Pro features unlocked by a key (self-hosted) ──
+LICENSE_URL   = "https://www.zhmotions.com/api/license/verify.php"
+LIC_FILE      = HOME/".config/zhmaccleaner/license.json"
+PRO_FEATURES  = {"uninstall", "dupes", "maint"}     # locked until Pro
+GRACE_DAYS    = 14                                  # offline grace after last good check
+
+def device_id():
+    try:
+        out = subprocess.run(["ioreg","-rd1","-c","IOPlatformExpertDevice"],
+                             capture_output=True, text=True).stdout
+        import re
+        m = re.search(r'IOPlatformUUID" = "([^"]+)"', out)
+        uid = m.group(1) if m else "unknown"
+    except Exception:
+        uid = "unknown"
+    return hashlib.sha256(uid.encode()).hexdigest()[:16]
 
 # ── Monochromatic palette — every tone is a shade of ONE maroon hue ──
 C = {
@@ -258,10 +275,14 @@ class Cleaner(tk.Tk):
         self.nav_btns = {}
         self.views = {}
 
+        self.lic = {"key": "", "plan": "free", "valid": False, "checked": 0}
+        self._load_license()
+
         self._build()
         self.after(80, self._pump)
         self.after(300, self.scan_all)         # auto-scan on launch
         self.after(2500, lambda: self.check_updates(silent=True))  # quiet update check
+        self.after(1500, self._reverify_license)   # refresh Pro status online
         self._trash_size()
 
     # ── UI ──
@@ -291,7 +312,7 @@ class Cleaner(tk.Tk):
         self.active_view = None
         nav = [("cleanup","Cleanup","🧹"), ("large","Large Files","📦"),
                ("uninstall","Uninstaller","🗑️"), ("dupes","Duplicates","👯"),
-               ("maint","Maintenance","🛠"), ("help","Help & About","ℹ️")]
+               ("maint","Maintenance","🛠"), ("license","Pro","⭐"), ("help","Help & About","ℹ️")]
         for key, label, ico in nav:
             b = tk.Label(side, text=f"   {ico}   {label}", bg=C["SIDEBAR"], fg=C["TEXT"],
                          font=(UIFONT, 13), anchor="w", cursor="pointinghand", padx=12, pady=11)
@@ -310,6 +331,7 @@ class Cleaner(tk.Tk):
         self._build_uninstaller()
         self._build_duplicates()
         self._build_maintenance()
+        self._build_license()
         self._build_help()
 
         # Status bar
@@ -452,6 +474,15 @@ class Cleaner(tk.Tk):
         step()
 
     def show_view(self, name):
+        # Pro gate
+        if name in PRO_FEATURES and not self.is_pro():
+            feat = {"uninstall":"App Uninstaller","dupes":"Duplicate Finder","maint":"Maintenance"}.get(name,"This")
+            if hasattr(self, "lic_ctx"):
+                self.lic_ctx.config(text=f"🔒  {feat} is a Pro feature — activate a license to unlock it.")
+            self._refresh_license_ui()
+            name = "license"
+        elif hasattr(self, "lic_ctx"):
+            self.lic_ctx.config(text="")
         self.active_view = name
         for v in self.views.values(): v.pack_forget()
         self.views[name].pack(fill="both", expand=True)
@@ -478,6 +509,12 @@ class Cleaner(tk.Tk):
                 elif kind == "update": self._show_update(*payload)
                 elif kind == "gauge_anim": self._animate_gauge()
                 elif kind == "maint_done": self._maint_done(*payload)
+                elif kind == "license_changed": self._refresh_license_ui()
+                elif kind == "license_result":
+                    ok, msg = payload
+                    (messagebox.showinfo if ok else messagebox.showwarning)("ZH MacCleaner — License", msg)
+                    self._refresh_license_ui()
+                    if ok and self.active_view == "license": self.show_view("cleanup")
         except queue.Empty:
             pass
         self.after(80, self._pump)
@@ -788,6 +825,109 @@ class Cleaner(tk.Tk):
 
     def _maint_done(self, label, ok, detail):
         (messagebox.showinfo if ok else messagebox.showwarning)("ZH MacCleaner — " + label, detail)
+
+    # ══ LICENSE / PRO ══
+    def is_pro(self):
+        return bool(self.lic.get("valid")) and self.lic.get("plan") == "pro"
+
+    def _load_license(self):
+        try:
+            d = json.loads(LIC_FILE.read_text())
+            self.lic.update(d)
+            if self.lic.get("valid") and (time.time() - self.lic.get("checked", 0)) > GRACE_DAYS*86400:
+                self.lic["valid"] = False      # grace expired, needs re-check
+        except Exception:
+            pass
+
+    def _save_license(self):
+        try:
+            LIC_FILE.parent.mkdir(parents=True, exist_ok=True)
+            LIC_FILE.write_text(json.dumps(self.lic))
+        except Exception:
+            pass
+
+    def _verify_online(self, key):
+        try:
+            body = urllib.parse.urlencode({
+                "key": key, "app": "maccleaner", "device": device_id(), "v": APP_VERSION}).encode()
+            req = urllib.request.Request(LICENSE_URL, data=body, headers={
+                "User-Agent": "ZHMacCleaner",
+                "Content-Type": "application/x-www-form-urlencoded"})   # so PHP fills $_POST
+            data = json.loads(urllib.request.urlopen(req, timeout=10).read().decode())
+            return bool(data.get("valid")), (data.get("plan") or "pro"), (data.get("message") or "")
+        except Exception as e:
+            return None, None, str(e)           # None = couldn't reach server
+
+    def _reverify_license(self):
+        key = self.lic.get("key")
+        if not key: return
+        def run():
+            ok, plan, _ = self._verify_online(key)
+            if ok is None: return               # offline → keep cached within grace
+            self.lic.update({"valid": bool(ok), "plan": plan or "free", "checked": time.time()})
+            self._save_license(); self.q.put(("license_changed", None))
+        threading.Thread(target=run, daemon=True).start()
+
+    def activate_license(self, key):
+        key = key.strip()
+        if not key: messagebox.showinfo("License", "Enter your license key first."); return
+        self.q.put(("status", "Verifying license…"))
+        def run():
+            ok, plan, msg = self._verify_online(key)
+            if ok is None:
+                self.q.put(("license_result", (False, "Couldn't reach the license server. Check your internet.")))
+            elif ok:
+                self.lic.update({"key": key, "valid": True, "plan": plan or "pro", "checked": time.time()})
+                self._save_license()
+                self.q.put(("license_result", (True, "✅ Pro unlocked. Thank you for supporting ZH Motions!")))
+            else:
+                self.q.put(("license_result", (False, msg or "Invalid or inactive key.")))
+        threading.Thread(target=run, daemon=True).start()
+
+    def _build_license(self):
+        v = tk.Frame(self.content, bg=C["BG"]); self.views["license"] = v
+        inner = self._scroller(v)
+        self.lic_ctx = tk.Label(inner, text="", bg=C["SURF"], fg=C["MAROON"], anchor="w",
+                                font=(UIFONT, 12, "bold"), wraplength=520, justify="left")
+        self.lic_ctx.pack(fill="x", padx=14, pady=(14,0))
+        tk.Label(inner, text="ZH MacCleaner Pro", bg=C["SURF"], fg=C["TEXT"],
+                 font=(UIFONT, 18, "bold")).pack(anchor="w", padx=14, pady=(8,2))
+        self.lic_status = tk.Label(inner, text="", bg=C["SURF"], anchor="w", font=(UIFONT, 12, "bold"))
+        self.lic_status.pack(fill="x", padx=14, pady=(0,8))
+
+        tk.Label(inner, text="Pro unlocks:", bg=C["SURF"], fg=C["TEXT"], anchor="w",
+                 font=(UIFONT, 12, "bold")).pack(fill="x", padx=14, pady=(6,2))
+        for t in ("🗑️  App Uninstaller — remove apps + leftovers",
+                  "👯  Duplicate Finder — reclaim wasted space",
+                  "🛠  Maintenance — free RAM, flush DNS, reindex",
+                  "↻  Priority updates from zhmotions.com"):
+            tk.Label(inner, text="   "+t, bg=C["SURF"], fg=C["MUTED"], anchor="w",
+                     font=(UIFONT, 11)).pack(fill="x", padx=14)
+
+        tk.Label(inner, text="License key", bg=C["SURF"], fg=C["TEXT"], anchor="w",
+                 font=(UIFONT, 12, "bold")).pack(fill="x", padx=14, pady=(14,2))
+        row = tk.Frame(inner, bg=C["SURF"]); row.pack(fill="x", padx=14)
+        self.key_entry = tk.Entry(row, font=(MONO, 12), relief="flat",
+                                  bg=C["BG"], fg=C["TEXT"], insertbackground=C["TEXT"])
+        self.key_entry.pack(side="left", fill="x", expand=True, ipady=5, padx=(0,8))
+        self._btn(row, "Activate", lambda: self.activate_license(self.key_entry.get()), "gold").pack(side="right")
+
+        buy = tk.Label(inner, text="Get a license at zhmotions.com/maccleaner", bg=C["SURF"],
+                       fg=C["MAROON2"], font=(UIFONT, 11, "underline"), cursor="pointinghand")
+        buy.pack(anchor="w", padx=14, pady=14)
+        buy.bind("<Button-1>", lambda e: subprocess.run(["open", SITE+"/maccleaner"]))
+        self._refresh_license_ui()
+
+    def _refresh_license_ui(self):
+        if not hasattr(self, "lic_status"): return
+        if self.is_pro():
+            self.lic_status.config(text="● PRO — active ✓", fg=C["GREEN"])
+            self.key_entry.delete(0, "end"); self.key_entry.insert(0, self.lic.get("key",""))
+        else:
+            self.lic_status.config(text="○ Free version", fg=C["MUTED"])
+        # nav star reflects status
+        if "license" in self.nav_btns:
+            self.nav_btns["license"].config(text="   ⭐   " + ("Pro ✓" if self.is_pro() else "Pro"))
 
     # ══ HELP & ABOUT ══
     def _build_help(self):
