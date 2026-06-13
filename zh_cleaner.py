@@ -34,7 +34,7 @@ UPDATE_SOURCES = [
 ]
 
 # ── Licensing: free app, Pro features unlocked by a key (self-hosted) ──
-LICENSE_URL   = "https://www.zhmotions.com/api/license/verify.php"
+LICENSE_URL   = "https://zhmotions.com/api/license/verify"   # non-www + no .php (server strips it; redirects drop POST body)
 LIC_FILE      = HOME/".config/zhmaccleaner/license.json"
 PRO_FEATURES  = {"uninstall", "dupes", "maint"}     # locked until Pro
 GRACE_DAYS    = 14                                  # offline grace after last good check
