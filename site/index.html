@@ -5,23 +5,39 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 <title>ZH MacCleaner — Free up your Mac, safely</title>
 <meta name="description" content="ZH MacCleaner by ZH Motions — a safe, simple Mac cleaner. Clear caches, find large files & duplicates, uninstall apps cleanly."/>
+<link rel="icon" type="image/png" href="icon.png"/>
+<link rel="apple-touch-icon" href="icon.png"/>
+<meta property="og:type" content="website"/>
+<meta property="og:title" content="ZH MacCleaner"/>
+<meta property="og:description" content="Free up your Mac — safely. No junk, no risk."/>
+<meta property="og:image" content="https://zhmotions.com/maccleaner/icon.png"/>
+<meta property="og:url" content="https://zhmotions.com/maccleaner"/>
+<meta name="twitter:card" content="summary_large_image"/>
 <style>
-  :root{ --maroon:#7A1F2B; --maroon2:#9c2a3a; --gold:#C8901E; --ink:#1d1d1f; --muted:#86868b; --bg:#f5f5f7; }
+  :root{ --maroon:#7A1F2B; --maroon2:#9c2a3a; --gold:#C8901E; --ink:#2c1014; --muted:#86868b; --bg:#f7f1f2; --surf:#fff; --border:#e6d8d3; }
   *{box-sizing:border-box;margin:0;padding:0}
-  body{font-family:-apple-system,"SF Pro Text","Helvetica Neue",Arial,sans-serif;background:var(--bg);color:var(--ink);line-height:1.5}
-  .wrap{max-width:760px;margin:0 auto;padding:64px 24px;text-align:center}
-  .logo{width:96px;height:96px;border-radius:22px;box-shadow:0 10px 30px rgba(122,31,43,.25);margin-bottom:22px}
+  body{font-family:-apple-system,"SF Pro Text","Helvetica Neue",Arial,sans-serif;background:var(--bg);color:var(--ink);line-height:1.55}
+  .wrap{max-width:780px;margin:0 auto;padding:56px 24px;text-align:center}
+  .logo{width:96px;height:96px;border-radius:22px;box-shadow:0 10px 30px rgba(122,31,43,.25);margin-bottom:20px}
   h1{font-size:42px;letter-spacing:-.5px;color:var(--maroon)}
-  .tag{font-size:19px;color:var(--muted);margin:10px 0 30px}
+  .tag{font-size:19px;color:var(--muted);margin:10px 0 28px}
   .btn{display:inline-block;background:var(--maroon);color:#fff;text-decoration:none;font-size:18px;font-weight:700;
-       padding:16px 34px;border-radius:14px;box-shadow:0 8px 22px rgba(122,31,43,.3);transition:.15s}
+       padding:16px 34px;border-radius:14px;box-shadow:0 8px 22px rgba(122,31,43,.3);transition:.15s;cursor:pointer}
   .btn:hover{background:var(--maroon2);transform:translateY(-1px)}
+  .btn.gold{background:var(--gold)} .btn.gold:hover{background:#b07f1c}
   .meta{color:var(--muted);font-size:13px;margin-top:12px}
-  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin:54px 0;text-align:left}
-  .card{background:#fff;border:1px solid #e3e3e6;border-radius:14px;padding:20px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin:48px 0;text-align:left}
+  .card{background:var(--surf);border:1px solid var(--border);border-radius:14px;padding:20px}
   .card h3{font-size:16px;color:var(--maroon);margin-bottom:6px}
   .card p{font-size:14px;color:var(--muted)}
-  .steps{background:#fff;border:1px solid #e3e3e6;border-radius:14px;padding:24px;text-align:left;margin-top:20px}
+  .pro{background:var(--surf);border:2px solid var(--maroon);border-radius:18px;padding:34px;margin:40px 0;text-align:center}
+  .pro h2{font-size:28px;color:var(--maroon)}
+  .price{font-size:40px;font-weight:800;color:var(--ink);margin:6px 0}
+  .price small{font-size:16px;color:var(--muted);font-weight:500}
+  .pro ul{list-style:none;display:inline-block;text-align:left;margin:14px 0 22px}
+  .pro li{margin:7px 0;color:var(--ink)}
+  .pro li::before{content:"✓  ";color:var(--maroon);font-weight:800}
+  .steps{background:var(--surf);border:1px solid var(--border);border-radius:14px;padding:24px;text-align:left;margin-top:20px}
   .steps li{margin:8px 0 8px 18px}
   .foot{color:var(--muted);font-size:13px;margin-top:48px}
   .foot a{color:var(--maroon2)}
@@ -33,16 +49,32 @@
   <h1>ZH MacCleaner</h1>
   <p class="tag">Free up your Mac — safely. No junk, no risk.</p>
 
-  <a class="btn" href="ZH-MacCleaner.dmg" download>⬇  Download for macOS</a>
-  <p class="meta">Version 1.0 · macOS 11+ · Free · ~280 KB</p>
+  <a class="btn" href="https://zhmotions.com/maccleaner/ZH-MacCleaner.dmg">⬇  Download for macOS</a>
+  <p class="meta">Version 1.0 · macOS 11+ · Free to use · ~12 MB</p>
 
   <div class="grid">
-    <div class="card"><h3>🧹 Cleanup</h3><p>Clears caches & logs your Mac rebuilds on its own.</p></div>
+    <div class="card"><h3>🧹 Cleanup</h3><p>Clears caches &amp; logs your Mac rebuilds on its own.</p></div>
     <div class="card"><h3>📦 Large Files</h3><p>Finds big files you forgot — send them to Trash.</p></div>
-    <div class="card"><h3>🗑️ Uninstaller</h3><p>Removes an app plus all its leftover files.</p></div>
-    <div class="card"><h3>👯 Duplicates</h3><p>Finds identical files, keeps one, trashes the rest.</p></div>
-    <div class="card"><h3>🛠 Maintenance</h3><p>Free RAM, flush DNS, reindex Spotlight in a click.</p></div>
+    <div class="card"><h3>🗑️ Uninstaller <span style="color:#C8901E">PRO</span></h3><p>Removes an app plus all its leftover files.</p></div>
+    <div class="card"><h3>👯 Duplicates <span style="color:#C8901E">PRO</span></h3><p>Finds identical files, keeps one, trashes the rest.</p></div>
+    <div class="card"><h3>🛠 Maintenance <span style="color:#C8901E">PRO</span></h3><p>Free RAM, flush DNS, reindex Spotlight in a click.</p></div>
     <div class="card"><h3>🔒 Safe by design</h3><p>Only safe folders. Your files go to the Trash.</p></div>
+  </div>
+
+  <!-- PRO / BUY -->
+  <div class="pro">
+    <h2>ZH MacCleaner Pro</h2>
+    <div class="price">$19 <small>one-time · 3 Macs</small></div>
+    <ul>
+      <li>App Uninstaller — remove apps + all leftovers</li>
+      <li>Duplicate Finder — reclaim wasted space</li>
+      <li>Maintenance — free RAM, flush DNS, reindex</li>
+      <li>Priority updates &amp; support</li>
+    </ul>
+    <br/>
+    <!-- TODO: replace href with your Gumroad / Lemon Squeezy / Stripe checkout link -->
+    <a class="btn gold" href="https://zhmotions.gumroad.com/l/maccleaner-pro">⭐  Buy Pro License</a>
+    <p class="meta">After payment you get a license key by email. Paste it in the app → ⭐ Pro → Activate.</p>
   </div>
 
   <div class="steps">

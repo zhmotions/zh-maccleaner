@@ -1,0 +1,5 @@
+# Force .dmg to download with the correct type (Hostinger served it as text/plain)
+<FilesMatch "\.dmg$">
+  ForceType application/octet-stream
+  Header set Content-Disposition "attachment"
+</FilesMatch>

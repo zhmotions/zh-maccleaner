@@ -29,9 +29,8 @@ SITE        = "https://www.zhmotions.com"
 # Same update system as ZH Downloader: zhmotions.com FIRST, GitHub as fallback.
 #   version.json -> {"version":"1.1","download_url":"https://.../ZH-MacCleaner.dmg","notes":"..."}
 UPDATE_SOURCES = [
-    ("zhmotions", "https://www.zhmotions.com/maccleaner/version.json", "zhm"),
-    ("github",    "https://api.github.com/repos/zhmotions/zh-maccleaner/releases/latest", "gh"),
-]
+    ("zhmotions", "https://zhmotions.com/maccleaner/version.json", "zhm"),
+]   # zhmotions.com only — no third-party
 
 # ── Licensing: free app, Pro features unlocked by a key (self-hosted) ──
 LICENSE_URL   = "https://zhmotions.com/api/license/verify"   # non-www + no .php (server strips it; redirects drop POST body)
