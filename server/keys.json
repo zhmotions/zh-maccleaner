@@ -1,6 +1,0 @@
-{
-  "ZHMC-DEMO-1234-5678": {
-    "app": "maccleaner", "plan": "pro", "active": true,
-    "max_devices": 3, "devices": [], "expires": "", "owner": "demo@zhmotions.com"
-  }
-}

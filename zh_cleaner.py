@@ -10,7 +10,7 @@ Safety:
   • Auto-scans on launch and shows sizes BEFORE you clean.
 """
 
-import os, sys, threading, queue, time, subprocess, shutil, hashlib, plistlib, json
+import os, sys, threading, queue, time, subprocess, hashlib, plistlib, json
 import urllib.request, urllib.parse
 from pathlib import Path
 import tkinter as tk
@@ -88,20 +88,17 @@ def move_to_trash(path):
         f'tell application "Finder" to move (POSIX file "{p}") to trash'], capture_output=True)
 
 def clear_contents(path):
-    freed = 0
-    if not os.path.isdir(path): return 0
-    for entry in os.listdir(path):
-        fp = os.path.join(path, entry)
-        try:
-            sz = dir_size(fp) if os.path.isdir(fp) and not os.path.islink(fp) else os.path.getsize(fp)
-        except OSError:
-            sz = 0
-        try:
-            if os.path.islink(fp) or os.path.isfile(fp): os.remove(fp); freed += sz
-            elif os.path.isdir(fp): shutil.rmtree(fp, ignore_errors=True); freed += sz
-        except OSError:
-            pass
-    return freed
+    """Delete a dir's contents with native rm, time-bounded so a busy/locked
+    cache (e.g. a running browser) can never freeze the app."""
+    p = str(path)
+    if not os.path.isdir(p):
+        return
+    try:
+        # remove visible + hidden entries INSIDE the dir, keep the dir itself
+        subprocess.run(["bash", "-c", 'rm -rf "$0"/* "$0"/.[!.]* "$0"/..?* 2>/dev/null', p],
+                       timeout=45)
+    except Exception:
+        pass
 
 # ── App uninstaller ─────────────────────────────────────────────────────
 APP_DIRS = ["/Applications", str(HOME/"Applications")]
@@ -511,6 +508,8 @@ class Cleaner(tk.Tk):
                 elif kind == "update": self._show_update(*payload)
                 elif kind == "gauge_anim": self._animate_gauge()
                 elif kind == "maint_done": self._maint_done(*payload)
+                elif kind == "clean_done":
+                    messagebox.showinfo("ZH MacCleaner", f"✅ Cleanup complete.\n\nFreed about {human(payload)}.")
                 elif kind == "license_changed": self._refresh_license_ui()
                 elif kind == "license_result":
                     ok, msg = payload
@@ -561,16 +560,23 @@ class Cleaner(tk.Tk):
         if not messagebox.askyesno("Clean these?",
             f"Delete cache/log contents for:\n\n{names}\n\n≈ {human(est)} freed. "
             f"These regenerate automatically.\n\nContinue?"): return
-        self.q.put(("busy", True)); self.q.put(("status","Cleaning…"))
+        self.q.put(("busy", True))
         def run():
             freed = 0
-            for k in picks:
-                for p in CATEGORIES[k][3]:
-                    if p.exists(): freed += clear_contents(p)
-                self.q.put(("size",(k,0)))
-            self.q.put(("status", f"✅ Freed {human(freed)}."))
-            self.q.put(("busy", False))
-            self._trash_size()
+            try:
+                for k in picks:
+                    self.q.put(("status", f"Cleaning {CATEGORIES[k][1]}…"))   # live per-category
+                    freed += self.sizes.get(k, 0)                             # scanned size, no re-du
+                    for p in CATEGORIES[k][3]:
+                        if p.exists(): clear_contents(p)
+                    self.q.put(("size", (k, 0)))
+            except Exception as e:
+                self.q.put(("status", f"⚠ Clean error: {e}"))
+            finally:                                                          # ALWAYS finish
+                self.q.put(("status", f"✅ Cleaned. Freed {human(freed)}."))
+                self.q.put(("clean_done", freed))
+                self.q.put(("busy", False))
+                self._trash_size()
         threading.Thread(target=run, daemon=True).start()
 
     def empty_trash(self):
@@ -906,28 +912,61 @@ class Cleaner(tk.Tk):
             tk.Label(inner, text="   "+t, bg=C["SURF"], fg=C["MUTED"], anchor="w",
                      font=(UIFONT, 11)).pack(fill="x", padx=14)
 
-        tk.Label(inner, text="License key", bg=C["SURF"], fg=C["TEXT"], anchor="w",
+        # ── FREE: enter a key ──
+        self.key_section = tk.Frame(inner, bg=C["SURF"])
+        self.key_section.pack(fill="x")
+        tk.Label(self.key_section, text="License key", bg=C["SURF"], fg=C["TEXT"], anchor="w",
                  font=(UIFONT, 12, "bold")).pack(fill="x", padx=14, pady=(14,2))
-        row = tk.Frame(inner, bg=C["SURF"]); row.pack(fill="x", padx=14)
+        row = tk.Frame(self.key_section, bg=C["SURF"]); row.pack(fill="x", padx=14)
         self.key_entry = tk.Entry(row, font=(MONO, 12), relief="flat",
                                   bg=C["BG"], fg=C["TEXT"], insertbackground=C["TEXT"])
         self.key_entry.pack(side="left", fill="x", expand=True, ipady=5, padx=(0,8))
         self._btn(row, "Activate", lambda: self.activate_license(self.key_entry.get()), "gold").pack(side="right")
-
-        buy = tk.Label(inner, text="Get a license at zhmotions.com/maccleaner", bg=C["SURF"],
+        buy = tk.Label(self.key_section, text="Get a license at zhmotions.com/maccleaner", bg=C["SURF"],
                        fg=C["MAROON2"], font=(UIFONT, 11, "underline"), cursor="pointinghand")
         buy.pack(anchor="w", padx=14, pady=14)
         buy.bind("<Button-1>", lambda e: subprocess.run(["open", SITE+"/maccleaner"]))
+
+        # ── PRO: manage / control (shown when activated) ──
+        self.pro_section = tk.Frame(inner, bg=C["SURF"])
+        self.lic_keylbl = tk.Label(self.pro_section, text="", bg=C["SURF"], fg=C["MUTED"],
+                                   anchor="w", font=(MONO, 12))
+        self.lic_keylbl.pack(fill="x", padx=14, pady=(14,8))
+        mrow = tk.Frame(self.pro_section, bg=C["SURF"]); mrow.pack(fill="x", padx=14, pady=(0,12))
+        self._btn(mrow, "Change key", self._change_key, "ghost").pack(side="left")
+        self._btn(mrow, "Deactivate", self.deactivate_license, "ghost").pack(side="left", padx=8)
+
         self._refresh_license_ui()
+
+    def _change_key(self):
+        # show the entry again without losing Pro until a new key is activated
+        self.pro_section.pack_forget(); self.key_section.pack(fill="x")
+        self.key_entry.delete(0, "end"); self.key_entry.focus_set()
+
+    def deactivate_license(self):
+        if not messagebox.askyesno("Deactivate", "Remove the license from this Mac? Pro features will lock."):
+            return
+        self.lic = {"key": "", "plan": "free", "valid": False, "checked": 0}
+        try: LIC_FILE.unlink()
+        except Exception: pass
+        self._save_license()
+        self._refresh_license_ui()
+        self.q.put(("status", "License removed. Pro locked."))
 
     def _refresh_license_ui(self):
         if not hasattr(self, "lic_status"): return
         if self.is_pro():
             self.lic_status.config(text="● PRO — active ✓", fg=C["GREEN"])
-            self.key_entry.delete(0, "end"); self.key_entry.insert(0, self.lic.get("key",""))
+            # hide the key entry, show the manage box (masked key + controls)
+            self.key_section.pack_forget()
+            self.pro_section.pack(fill="x")
+            k = self.lic.get("key", "")
+            masked = (k[:9] + "••••-" + k[-4:]) if len(k) > 13 else k
+            self.lic_keylbl.config(text="Licensed key:  " + masked)
         else:
             self.lic_status.config(text="○ Free version", fg=C["MUTED"])
-        # nav star reflects status
+            self.pro_section.pack_forget()
+            self.key_section.pack(fill="x")
         if "license" in self.nav_btns:
             self.nav_btns["license"].config(text="   ⭐   " + ("Pro ✓" if self.is_pro() else "Pro"))
 

@@ -17,3 +17,6 @@ __pycache__/
 
 # macOS
 .DS_Store
+
+# never commit live license data / secrets
+server/keys.json

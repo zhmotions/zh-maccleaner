@@ -1,0 +1,13 @@
+# Block public HTTP access to key data. verify.php / admin.php still read it
+# from the filesystem, so the API keeps working.
+<FilesMatch "\.(json)$">
+  Require all denied
+</FilesMatch>
+
+# Fallback for older Apache (2.2)
+<IfModule !mod_authz_core.c>
+  <FilesMatch "\.(json)$">
+    Order allow,deny
+    Deny from all
+  </FilesMatch>
+</IfModule>

@@ -9,7 +9,7 @@
  */
 header('Content-Type: application/json');
 
-$SECRET = "ZHADMIN-9f3a7c21-CHANGE-ME";     // <-- change this (and in the app)
+$SECRET = "ZHADMIN-CHANGE-ME-BEFORE-DEPLOY";     // <-- change this (and in the app)
 $store  = __DIR__ . '/keys.json';
 
 $in = $_POST + $_GET;
