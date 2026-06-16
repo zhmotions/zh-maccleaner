@@ -1,10 +1,11 @@
-# ZH MacCleaner 1.0.1
+# ZH MacCleaner 1.0.2
 
 A safe, simple Mac cleaner by ZH Motions.
 
-**What's new in 1.0.1**
-- Fixed **"Couldn't reach the license server"** on fresh Macs — the app now bundles CA certificates (certifi) so HTTPS license checks work everywhere, with an automatic retry.
-- `.pkg` installer now auto-removes the macOS quarantine flag → no "damaged" warning after install.
+**What's new in 1.0.2**
+- **Now opens on macOS Sonoma (14) and Sequoia (15)** — the app is built on an older macOS runner so it runs on every modern Mac (earlier builds silently failed to launch on older macOS).
+- Fixed **"Couldn't reach the license server"** on fresh Macs — bundles CA certificates (certifi) so HTTPS license checks work everywhere, with an automatic retry.
+- `.pkg` installer auto-removes the macOS quarantine flag → no "damaged" warning after install.
 
 ## ⬇️ How to install (read this!)
 

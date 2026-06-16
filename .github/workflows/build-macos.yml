@@ -1,0 +1,105 @@
+name: Build macOS (PKG / DMG / ZIP)
+
+# Build on an OLDER runner (macOS 14 Sonoma) so the bundled Python/Tk dylibs get a
+# low minimum-OS (minos 14). A build made on macOS 26 has minos 26 and silently
+# refuses to launch on Sonoma/Sequoia clients — this CI is the reliable fix.
+
+on:
+  push:
+    tags: ['v*']          # push a tag like v1.0.2 -> builds + publishes a Release
+  workflow_dispatch:       # or run manually (uploads artifacts, no release)
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    runs-on: macos-14      # Sonoma -> minos 14 -> runs on macOS 14, 15 (Sequoia) and 26
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Python 3.12 + Tk
+        run: |
+          brew install python-tk@3.12 || true
+          echo "/opt/homebrew/bin" >> $GITHUB_PATH
+
+      - name: Install build deps
+        run: |
+          python3.12 -m pip install --upgrade pip pyinstaller certifi pillow --break-system-packages
+
+      - name: Generate app icon (.icns)
+        run: |
+          python3.12 - <<'PY'
+          from PIL import Image; import os
+          sz = 1024; icon = Image.new("RGBA", (sz, sz), (0, 0, 0, 0))
+          m = Image.open("assets/icon.png").convert("RGBA"); h = m.height
+          icon.alpha_composite(m.crop((0, 0, h, h)).resize((sz, sz), Image.LANCZOS))
+          os.makedirs("icon.iconset", exist_ok=True)
+          for s in [16, 32, 64, 128, 256, 512, 1024]:
+              icon.resize((s, s), Image.LANCZOS).save(f"icon.iconset/icon_{s}x{s}.png")
+              icon.resize((s, s), Image.LANCZOS).save(f"icon.iconset/icon_{s//2}x{s//2}@2x.png")
+          PY
+          iconutil -c icns icon.iconset -o AppIcon.icns
+          rm -rf icon.iconset
+
+      - name: Read version
+        id: ver
+        run: echo "v=$(python3.12 -c "import re;print(re.search(r'APP_VERSION\s*=\s*\"([^\"]+)\"',open('zh_cleaner.py').read()).group(1))")" >> "$GITHUB_OUTPUT"
+
+      - name: Build .app (PyInstaller)
+        run: |
+          python3.12 -m PyInstaller --noconfirm --clean --windowed \
+            --name "ZH MacCleaner" \
+            --icon AppIcon.icns \
+            --osx-bundle-identifier com.zhmo.maccleaner \
+            --add-data "assets:assets" \
+            --hidden-import certifi --collect-data certifi \
+            zh_cleaner.py
+
+      - name: Ad-hoc codesign
+        run: |
+          xattr -cr "dist/ZH MacCleaner.app" 2>/dev/null || true
+          codesign --force --deep --sign - "dist/ZH MacCleaner.app"
+          codesign --verify --deep --strict "dist/ZH MacCleaner.app" && echo "signed ✓"
+
+      - name: Package ZIP / DMG / PKG
+        run: |
+          VER="${{ steps.ver.outputs.v }}"
+          APP="dist/ZH MacCleaner.app"
+
+          # ZIP (keeps the bundle intact)
+          ditto -c -k --sequesterRsrc --keepParent "$APP" "ZH-MacCleaner-${VER}-macOS.zip"
+
+          # DMG (drag-to-Applications)
+          STAGE="$(mktemp -d)"; cp -R "$APP" "$STAGE/"; ln -s /Applications "$STAGE/Applications"
+          hdiutil create -volname "ZH MacCleaner" -srcfolder "$STAGE" -ov -format UDZO "ZH-MacCleaner-${VER}.dmg"
+
+          # PKG with a postinstall that strips quarantine -> no "damaged" warning
+          PKGROOT="$(mktemp -d)"; SCR="$(mktemp -d)"
+          mkdir -p "$PKGROOT/Applications"; cp -R "$APP" "$PKGROOT/Applications/"
+          printf '#!/bin/sh\n/usr/bin/xattr -cr "/Applications/ZH MacCleaner.app" 2>/dev/null || true\nexit 0\n' > "$SCR/postinstall"
+          chmod +x "$SCR/postinstall"
+          pkgbuild --root "$PKGROOT" --scripts "$SCR" --identifier com.zhmo.maccleaner \
+            --version "$VER" --install-location / "ZH-MacCleaner-${VER}.pkg"
+
+          echo "Built:"; ls -la ZH-MacCleaner-*.zip ZH-MacCleaner-*.dmg ZH-MacCleaner-*.pkg
+
+      - name: Upload build artifacts (always)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZH-MacCleaner-macOS
+          path: |
+            ZH-MacCleaner-*.pkg
+            ZH-MacCleaner-*.dmg
+            ZH-MacCleaner-*-macOS.zip
+
+      - name: Publish GitHub Release (on tag)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ZH MacCleaner ${{ steps.ver.outputs.v }}
+          body_path: RELEASE-NOTES.md
+          files: |
+            ZH-MacCleaner-*.pkg
+            ZH-MacCleaner-*.dmg
+            ZH-MacCleaner-*-macOS.zip

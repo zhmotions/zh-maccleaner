@@ -37,7 +37,7 @@ elif "__file__" in globals():
 else:
     APP_DIR = Path.cwd()
 
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.0.2"
 SITE        = "https://www.zhmotions.com"
 # Same update system as ZH Downloader: zhmotions.com FIRST, GitHub as fallback.
 #   version.json -> {"version":"1.1","download_url":"https://.../ZH-MacCleaner.dmg","notes":"..."}
