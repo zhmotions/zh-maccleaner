@@ -861,7 +861,7 @@ class Cleaner(tk.Tk):
             req = urllib.request.Request(LICENSE_URL, data=body, headers={
                 "User-Agent": UA,
                 "Content-Type": "application/x-www-form-urlencoded"})   # so PHP fills $_POST
-            data = json.loads(urllib.request.urlopen(req, timeout=10).read().decode())
+            data = json.loads(urllib.request.urlopen(req, timeout=20).read().decode())
             return bool(data.get("valid")), (data.get("plan") or "pro"), (data.get("message") or "")
         except Exception as e:
             return None, None, str(e)           # None = couldn't reach server

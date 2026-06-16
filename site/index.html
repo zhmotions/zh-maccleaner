@@ -50,7 +50,8 @@
   <p class="tag">Free up your Mac — safely. No junk, no risk.</p>
 
   <a class="btn" href="https://zhmotions.com/maccleaner/download">⬇  Download for macOS</a>
-  <p class="meta">Version 1.0 · macOS 11+ · Free to use · ~12 MB</p>
+  <p class="meta">Version 1.0 · macOS 11+ · ~12 MB · One-click installer (.pkg)<br>
+  Prefer drag-install? <a href="https://zhmotions.com/maccleaner/download?type=dmg" style="color:#caa24a;">Get the .dmg</a></p>
 
   <div class="grid">
     <div class="card"><h3>🧹 Cleanup</h3><p>Clears caches &amp; logs your Mac rebuilds on its own.</p></div>
@@ -77,12 +78,25 @@
   </div>
 
   <div class="steps">
-    <strong>Install</strong>
+    <strong>Install (takes 20 seconds)</strong>
     <ol>
-      <li>Click <b>Download for macOS</b> above.</li>
-      <li>Open the <b>.dmg</b> → drag <b>ZH MacCleaner</b> to Applications.</li>
-      <li>First launch: <b>right-click → Open</b> (one-time, it's a new app).</li>
+      <li>Click <b>Download for macOS</b> above — you get <b>ZH-MacCleaner.pkg</b>.</li>
+      <li><b>Right-click</b> the .pkg → <b>Open</b> → <b>Open</b> → <b>Continue</b> → <b>Install</b>. (Right-click the first time so macOS lets it run.) It installs to Applications for you.</li>
+      <li><b>First launch only:</b> open <b>Applications</b>, <b>right-click</b> ZH MacCleaner → <b>Open</b> → <b>Open</b>. (After this it opens normally.)</li>
     </ol>
+  </div>
+
+  <div class="steps" style="border-color:#caa24a;background:#1b1407;">
+    <strong style="color:#e9c46a;">⚠ See "ZH MacCleaner is damaged"?</strong>
+    <p style="margin:8px 0 6px;color:#d9cdba;font-size:14px;line-height:1.55;">
+      It's <b>not</b> damaged — macOS just flags new apps from outside the App Store. One-time fix:
+    </p>
+    <ol>
+      <li>Open <b>Terminal</b> (press <b>⌘ + Space</b>, type <b>Terminal</b>, Enter).</li>
+      <li>Paste this line and press Enter:</li>
+    </ol>
+    <code style="display:block;background:#000;color:#7CFC9A;padding:11px 13px;border-radius:8px;font-size:13px;margin:8px 0;user-select:all;-webkit-user-select:all;overflow-x:auto;">xattr -cr "/Applications/ZH MacCleaner.app"</code>
+    <p style="margin:6px 0 0;color:#9a8f7e;font-size:13px;">Then open the app normally. You only do this once.</p>
   </div>
 
   <p class="foot">Made by <a href="https://www.zhmotions.com">ZH Motions</a> · © 2026</p>
