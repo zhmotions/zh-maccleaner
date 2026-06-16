@@ -14,7 +14,7 @@ if [ ! -d .build-venv ]; then
   /opt/homebrew/bin/python3.12 -m venv .build-venv
 fi
 source .build-venv/bin/activate
-pip install -q --upgrade pip pyinstaller >/dev/null 2>&1 || true
+pip install -q --upgrade pip pyinstaller certifi >/dev/null 2>&1 || true
 
 # 2. App icon (.icns) from the Z-mark
 echo "▸ Icon…"
@@ -35,6 +35,7 @@ echo "▸ PyInstaller bundle…"
 rm -rf build "dist/ZH MacCleaner.app" "ZH MacCleaner.spec"
 pyinstaller --noconfirm --windowed --name "ZH MacCleaner" \
   --icon AppIcon.icns --osx-bundle-identifier com.zhmo.maccleaner \
+  --hidden-import certifi --collect-data certifi \
   --add-data "assets:assets" zh_cleaner.py >/dev/null
 
 APP="dist/ZH MacCleaner.app"
@@ -55,12 +56,21 @@ hdiutil create -volname "ZH MacCleaner" -srcfolder "$APP" -ov -format UDZO "dist
 xattr -cr "dist/ZH-MacCleaner.dmg" 2>/dev/null || true
 
 # 6. .pkg installer — double-click installs straight to /Applications (no drag).
+#    A postinstall script strips the quarantine flag so the unsigned app opens
+#    WITHOUT the macOS "damaged" warning after install.
 echo "▸ PKG…"
 VER="$(/usr/bin/python3 -c "import re,io;print(re.search(r'APP_VERSION\s*=\s*\"([^\"]+)\"',open('zh_cleaner.py').read()).group(1))" 2>/dev/null || echo 1.0)"
-PKGROOT="$(mktemp -d)/root"
-mkdir -p "$PKGROOT/Applications"
+PKGTMP="$(mktemp -d)"
+PKGROOT="$PKGTMP/root"; PKGSCRIPTS="$PKGTMP/scripts"
+mkdir -p "$PKGROOT/Applications" "$PKGSCRIPTS"
 cp -R "$APP" "$PKGROOT/Applications/"
-pkgbuild --root "$PKGROOT" --identifier com.zhmo.maccleaner --version "$VER" --install-location / "dist/ZH-MacCleaner.pkg" >/dev/null
+cat > "$PKGSCRIPTS/postinstall" <<'POST'
+#!/bin/sh
+/usr/bin/xattr -cr "/Applications/ZH MacCleaner.app" 2>/dev/null || true
+exit 0
+POST
+chmod +x "$PKGSCRIPTS/postinstall"
+pkgbuild --root "$PKGROOT" --scripts "$PKGSCRIPTS" --identifier com.zhmo.maccleaner --version "$VER" --install-location / "dist/ZH-MacCleaner.pkg" >/dev/null
 xattr -cr "dist/ZH-MacCleaner.pkg" 2>/dev/null || true
 
 echo "✅ Built: $HERE/$APP"

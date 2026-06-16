@@ -11,7 +11,20 @@ Safety:
 """
 
 import os, sys, threading, queue, time, subprocess, hashlib, plistlib, json
-import urllib.request, urllib.parse
+import urllib.request, urllib.parse, ssl
+
+# SSL context with a real CA bundle. A PyInstaller .app on a fresh client Mac often
+# can't find the system CA certs → urlopen raises SSLCertVerificationError →
+# "Couldn't reach the license server" even though the network is fine. Bundle certifi
+# so verification works on every Mac; fall back to the default context if unavailable.
+try:
+    import certifi
+    SSL_CTX = ssl.create_default_context(cafile=certifi.where())
+except Exception:
+    try:
+        SSL_CTX = ssl.create_default_context()
+    except Exception:
+        SSL_CTX = None
 from pathlib import Path
 import tkinter as tk
 from tkinter import messagebox
@@ -24,7 +37,7 @@ elif "__file__" in globals():
 else:
     APP_DIR = Path.cwd()
 
-APP_VERSION = "1.0"
+APP_VERSION = "1.0.1"
 SITE        = "https://www.zhmotions.com"
 # Same update system as ZH Downloader: zhmotions.com FIRST, GitHub as fallback.
 #   version.json -> {"version":"1.1","download_url":"https://.../ZH-MacCleaner.dmg","notes":"..."}
@@ -855,16 +868,26 @@ class Cleaner(tk.Tk):
             pass
 
     def _verify_online(self, key):
-        try:
-            body = urllib.parse.urlencode({
-                "key": key, "app": "maccleaner", "device": device_id(), "v": APP_VERSION}).encode()
-            req = urllib.request.Request(LICENSE_URL, data=body, headers={
-                "User-Agent": UA,
-                "Content-Type": "application/x-www-form-urlencoded"})   # so PHP fills $_POST
-            data = json.loads(urllib.request.urlopen(req, timeout=20).read().decode())
-            return bool(data.get("valid")), (data.get("plan") or "pro"), (data.get("message") or "")
-        except Exception as e:
-            return None, None, str(e)           # None = couldn't reach server
+        # Retry a few times: the host's anti-bot (LiteSpeed reCAPTCHA) can return an
+        # HTML challenge on the first hit from a cold IP, which isn't JSON. A quick
+        # retry almost always succeeds once the IP is warmed.
+        last_err = ""
+        for attempt in range(3):
+            try:
+                body = urllib.parse.urlencode({
+                    "key": key, "app": "maccleaner", "device": device_id(), "v": APP_VERSION}).encode()
+                req = urllib.request.Request(LICENSE_URL, data=body, headers={
+                    "User-Agent": UA,
+                    "Accept": "application/json",
+                    "Content-Type": "application/x-www-form-urlencoded"})   # so PHP fills $_POST
+                raw = urllib.request.urlopen(req, timeout=20, context=SSL_CTX).read().decode()
+                data = json.loads(raw)   # bot-challenge HTML -> JSONDecodeError -> retry
+                return bool(data.get("valid")), (data.get("plan") or "pro"), (data.get("message") or "")
+            except Exception as e:
+                last_err = str(e)
+                if attempt < 2:
+                    time.sleep(1.2)
+        return None, None, last_err           # None = couldn't reach after retries
 
     def _reverify_license(self):
         key = self.lic.get("key")
@@ -1029,7 +1052,7 @@ class Cleaner(tk.Tk):
             for name, url, kind in UPDATE_SOURCES:
                 try:
                     req = urllib.request.Request(url, headers={"User-Agent": UA})
-                    data = json.loads(urllib.request.urlopen(req, timeout=8).read().decode())
+                    data = json.loads(urllib.request.urlopen(req, timeout=8, context=SSL_CTX).read().decode())
                     if kind == "zhm":
                         latest = str(data.get("version", "")).strip().lstrip("v")
                         dl     = data.get("download_url") or SITE
