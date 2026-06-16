@@ -1,9 +1,9 @@
-# ZH MacCleaner 1.0.2
+# ZH MacCleaner 1.0.3
 
 A safe, simple Mac cleaner by ZH Motions.
 
-**What's new in 1.0.2**
-- **Now opens on macOS Sonoma (14) and Sequoia (15)** — the app is built on an older macOS runner so it runs on every modern Mac (earlier builds silently failed to launch on older macOS).
+**What's new in 1.0.3**
+- **Now opens on macOS Ventura (13), Sonoma (14) and Sequoia (15)** — built on an older macOS runner so it runs on every modern Mac (earlier builds silently failed to launch on older macOS).
 - Fixed **"Couldn't reach the license server"** on fresh Macs — bundles CA certificates (certifi) so HTTPS license checks work everywhere, with an automatic retry.
 - `.pkg` installer auto-removes the macOS quarantine flag → no "damaged" warning after install.
 
@@ -43,7 +43,7 @@ Then open the app normally.
 ## Notes
 - **Safe by design:** only known cache folders are deleted; your files go to the Trash (recoverable).
 - For full cache cleanup, grant **Full Disk Access** (Settings → Privacy & Security → Full Disk Access → add ZH MacCleaner).
-- Requires **macOS 11 (Big Sur) or newer**, Apple Silicon.
+- Requires **macOS 13 (Ventura) or newer**, Apple Silicon.
 
 ## Downloads
 | File | Use this when |
