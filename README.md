@@ -8,7 +8,7 @@
 
 Made by [ZH Motions](https://zhmotions.com) · macOS
 
-![platform](https://img.shields.io/badge/platform-macOS%2013%2B-7A1F2B)
+![platform](https://img.shields.io/badge/platform-macOS%2014%2B-7A1F2B)
 ![license](https://img.shields.io/badge/license-MIT-7A1F2B)
 ![version](https://img.shields.io/badge/version-1.0-7A1F2B)
 

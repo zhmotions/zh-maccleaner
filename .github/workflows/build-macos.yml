@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   build-macos:
-    runs-on: macos-13      # Ventura -> minos 13 -> runs on macOS 13, 14, 15 (Sequoia) and 26
+    runs-on: macos-14      # Sonoma -> minos 14 -> runs on macOS 14, 15 (Sequoia) and 26
     steps:
       - uses: actions/checkout@v5
 
