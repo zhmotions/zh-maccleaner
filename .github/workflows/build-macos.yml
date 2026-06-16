@@ -84,15 +84,6 @@ jobs:
 
           echo "Built:"; ls -la ZH-MacCleaner-*.zip ZH-MacCleaner-*.dmg ZH-MacCleaner-*.pkg
 
-      - name: Upload build artifacts (always)
-        uses: actions/upload-artifact@v4
-        with:
-          name: ZH-MacCleaner-macOS
-          path: |
-            ZH-MacCleaner-*.pkg
-            ZH-MacCleaner-*.dmg
-            ZH-MacCleaner-*-macOS.zip
-
       - name: Publish GitHub Release (on tag)
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
