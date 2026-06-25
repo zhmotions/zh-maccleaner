@@ -25,7 +25,7 @@ jobs:
 
       - name: Install build deps
         run: |
-          python3.12 -m pip install --upgrade pyinstaller certifi pillow --break-system-packages
+          python3.12 -m pip install --upgrade --ignore-installed pyinstaller certifi pillow --break-system-packages
 
       - name: Generate app icon (.icns)
         run: |
