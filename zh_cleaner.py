@@ -37,7 +37,7 @@ elif "__file__" in globals():
 else:
     APP_DIR = Path.cwd()
 
-APP_VERSION = "1.0.3"
+APP_VERSION = "1.0.4"
 SITE        = "https://www.zhmotions.com"
 # Same update system as ZH Downloader: zhmotions.com FIRST, GitHub as fallback.
 #   version.json -> {"version":"1.1","download_url":"https://.../ZH-MacCleaner.dmg","notes":"..."}
@@ -138,17 +138,36 @@ def bundle_id(app_path):
     except Exception:
         return ""
 
+# Vendor prefixes we must NEVER delete as "leftovers" — protects OS + major apps' prefs/caches.
+# (Premiere keyboard shortcuts live in com.adobe.* prefs; CEP cache under Adobe/. A loose
+#  substring match used to nuke these when uninstalling an unrelated app.)
+PROTECTED_PREFIXES = (
+    "com.apple.", "apple", "com.adobe.", "adobe", "com.microsoft.", "microsoft",
+    "com.google.", "google", "cep", "crashreporter", "mobilesync",
+)
+
 def app_leftovers(app_name, app_path):
-    bid = bundle_id(app_path)
+    bid = (bundle_id(app_path) or "").lower()
     name_l = app_name.lower().replace(" ", "")
-    keys = [k for k in (bid, app_name) if k]
+    specific_name = len(name_l) >= 4          # too-short names match everything → skip name matching
     hits = []
     for d in LEFTOVER_DIRS:
         if not d.exists(): continue
         try:
             for e in os.listdir(d):
                 el = e.lower()
-                if (bid and bid.lower() in el) or (name_l and name_l in el.replace(" ", "")):
+                ell = el.replace(" ", "")
+                # PROTECT: never touch a vendor's files unless THIS app's bundle id IS that vendor.
+                if any(ell.startswith(p) for p in PROTECTED_PREFIXES) and not (bid and ell.startswith(bid)):
+                    continue
+                match = False
+                # 1) bundle-id match (reliable + unique): exact, or prefixed (".plist", subfolder, "-")
+                if bid and (ell == bid or ell.startswith(bid + ".") or ell.startswith(bid + "-") or ell.startswith(bid + " ")):
+                    match = True
+                # 2) name match ONLY if the entry starts with the (specific) app name — no loose substring.
+                elif specific_name and (ell == name_l or ell.startswith(name_l + ".") or ell.startswith(name_l + "-")):
+                    match = True
+                if match:
                     hits.append(d/e)
         except OSError:
             pass
@@ -190,15 +209,19 @@ def find_duplicates(dirs, min_size=1024*1024):
     return groups
 
 def fda_granted():
-    """True if the app has Full Disk Access (can read the TCC database)."""
-    try:
-        with open(HOME/"Library/Application Support/com.apple.TCC/TCC.db", "rb") as f:
-            f.read(1)
-        return True
-    except PermissionError:
-        return False
-    except Exception:
-        return True   # file missing / other — don't nag
+    """True ONLY if we can actually read a protected TCC database (i.e. Full Disk Access is on).
+    Any failure (denied, missing, other) → False so the Enable-FDA banner shows and the user can grant it."""
+    for p in (HOME/"Library/Application Support/com.apple.TCC/TCC.db",
+              Path("/Library/Application Support/com.apple.TCC/TCC.db")):
+        try:
+            with open(p, "rb") as f:
+                f.read(1)
+            return True            # read a protected DB → FDA is granted
+        except PermissionError:
+            return False           # explicitly denied → not granted → show banner
+        except Exception:
+            continue               # missing / other on this path → try the next, else fall through
+    return False                  # couldn't confirm → show the banner so the user can grant access
 
 def free_mem_bytes():
     """Approx available memory (free + inactive + speculative pages)."""
@@ -634,17 +657,32 @@ class Cleaner(tk.Tk):
                      font=(UIFONT, 12)).pack(pady=24); return
         now = time.time()
         for fp,sz,mt in found:
-            row = tk.Frame(self.binner, bg=C["SURF"]); row.pack(fill="x", padx=6, pady=1)
+            row = tk.Frame(self.binner, bg=C["SURF"]); row.pack(fill="x", padx=6, pady=2)
             row.columnconfigure(1, weight=1)
             var = tk.BooleanVar(value=False); self.big_vars[fp] = var
             tk.Checkbutton(row, variable=var, bg=C["SURF"], selectcolor=C["MAROON"],
                            activebackground=C["SURF"], bd=0, highlightthickness=0
-                           ).grid(row=0, column=0, sticky="w")
+                           ).grid(row=0, column=0, rowspan=2, sticky="w")
             nm = os.path.basename(fp); disp = (nm[:44]+"…") if len(nm)>45 else nm
-            tk.Label(row, text=disp, bg=C["SURF"], fg=C["TEXT"], anchor="w",
-                     font=(UIFONT, 11)).grid(row=0, column=1, sticky="w", padx=4)
+            nml = tk.Label(row, text=disp, bg=C["SURF"], fg=C["TEXT"], anchor="w",
+                     font=(UIFONT, 11, "bold")); nml.grid(row=0, column=1, sticky="w", padx=4)
+            folder = os.path.dirname(fp); pdisp = ("…"+folder[-58:]) if len(folder)>59 else folder
+            tk.Label(row, text=pdisp, bg=C["SURF"], fg=C["MUTED"], anchor="w",
+                     font=(UIFONT, 9)).grid(row=1, column=1, sticky="w", padx=4)
+            Tip(nml, fp)   # full path on hover — check before deleting
             tk.Label(row, text=f"{human(sz)} · {int((now-mt)/86400)}d", bg=C["SURF"], fg=C["GOLD"],
-                     font=(MONO, 11)).grid(row=0, column=2, sticky="e", padx=12)
+                     font=(MONO, 11)).grid(row=0, column=2, rowspan=2, sticky="e", padx=12)
+            tk.Button(row, text="↗ Reveal", command=lambda p=fp: self.reveal_in_finder(p),
+                      bg=C["SURF2"], fg=C["TEXT"], relief="flat", bd=0, padx=10, pady=3,
+                      cursor="pointinghand", font=(UIFONT, 10), activebackground=C["MAROON2"]
+                      ).grid(row=0, column=3, rowspan=2, padx=(4,8))
+
+    def reveal_in_finder(self, path):
+        """Open Finder with the file selected so the user can verify it before deleting."""
+        if os.path.exists(path):
+            subprocess.run(["open", "-R", path], capture_output=True)
+        else:
+            self.q.put(("status", "File no longer exists."))
 
     def trash_big(self):
         if self.busy: return
