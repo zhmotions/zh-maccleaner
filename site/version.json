@@ -1,5 +1,5 @@
 {
-    "version": "1.0.3",
-    "download_url": "https://zhmotions.com/shop",
-    "notes": "Now opens on macOS Sonoma & Sequoia (built for older macOS). Fixes license-server connection + 'damaged' warning."
+  "version": "1.0.4",
+  "download_url": "https://zhmotions.com/shop",
+  "notes": "Safer uninstaller — only removes the selected app's own leftovers (never other apps' or Adobe/system data). Plus macOS Sonoma/Sequoia + license-server fixes."
 }
