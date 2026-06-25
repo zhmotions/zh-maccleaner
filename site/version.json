@@ -1,5 +1,5 @@
 {
-  "version": "1.0",
-  "download_url": "https://zhmotions.com/maccleaner/download",
-  "notes": "Safe Mac cleaner. Cleanup, Large Files, Uninstaller, Duplicates, Maintenance."
+    "version": "1.0.3",
+    "download_url": "https://zhmotions.com/shop",
+    "notes": "Now opens on macOS Sonoma & Sequoia (built for older macOS). Fixes license-server connection + 'damaged' warning."
 }
