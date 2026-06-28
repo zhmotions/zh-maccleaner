@@ -37,7 +37,7 @@ elif "__file__" in globals():
 else:
     APP_DIR = Path.cwd()
 
-APP_VERSION = "1.0.4"
+APP_VERSION = "1.0.5"
 SITE        = "https://www.zhmotions.com"
 # Same update system as ZH Downloader: zhmotions.com FIRST, GitHub as fallback.
 #   version.json -> {"version":"1.1","download_url":"https://.../ZH-MacCleaner.dmg","notes":"..."}
@@ -100,16 +100,29 @@ def move_to_trash(path):
     subprocess.run(["osascript","-e",
         f'tell application "Finder" to move (POSIX file "{p}") to trash'], capture_output=True)
 
-def clear_contents(path):
-    """Delete a dir's contents with native rm, time-bounded so a busy/locked
-    cache (e.g. a running browser) can never freeze the app."""
+# Cache subfolders we must NEVER wipe — they hold Adobe CEP extension data (localStorage),
+# where panels like ZH Script Studio keep their license/activation + settings. Wiping
+# ~/Library/Caches blindly logs the user out of every CEP extension.
+CACHE_PROTECT = ["CSXS", "Adobe", "com.adobe.cep", "com.adobe.csxs", "cep"]
+
+def clear_contents(path, protect=None):
+    """Delete a dir's contents with native rm, time-bounded so a busy/locked cache
+    (e.g. a running browser) can never freeze the app. `protect` = top-level entry
+    names to KEEP (e.g. Adobe CEP extension data → preserves activation keys)."""
     p = str(path)
     if not os.path.isdir(p):
         return
     try:
-        # remove visible + hidden entries INSIDE the dir, keep the dir itself
-        subprocess.run(["bash", "-c", 'rm -rf "$0"/* "$0"/.[!.]* "$0"/..?* 2>/dev/null', p],
-                       timeout=45)
+        if protect:
+            # rm every top-level entry EXCEPT the protected names (CEP/Adobe extension data).
+            conds = "".join(f' ! -name "{n}"' for n in protect)
+            subprocess.run(["bash", "-c",
+                f'find "$0" -mindepth 1 -maxdepth 1{conds} -exec rm -rf {{}} + 2>/dev/null', p],
+                timeout=45)
+        else:
+            # remove visible + hidden entries INSIDE the dir, keep the dir itself
+            subprocess.run(["bash", "-c", 'rm -rf "$0"/* "$0"/.[!.]* "$0"/..?* 2>/dev/null', p],
+                           timeout=45)
     except Exception:
         pass
 
@@ -260,17 +273,24 @@ CATEGORIES = {
                  HOME/"Library/Caches/Homebrew", HOME/"Library/Caches/CocoaPods",
                  HOME/"Library/Developer/Xcode/DerivedData",
                  HOME/"Library/Developer/Xcode/iOS DeviceSupport"]),
+    # Adobe Premiere/AE media cache (cfa/pek/peak) — big space, regenerates. Does NOT touch
+    # Adobe CEP extension data (licenses) — that lives under Adobe/CEP, not Common/Media Cache.
+    "adobe":   ("🎬", "Adobe Media Cache", "Premiere · After Effects",
+                [HOME/"Library/Application Support/Adobe/Common/Media Cache Files",
+                 HOME/"Library/Application Support/Adobe/Common/Media Cache",
+                 HOME/"Library/Application Support/Adobe/Common/Peak Files"]),
 }
 SCAN_DIRS = [HOME/"Downloads", HOME/"Desktop", HOME/"Documents", HOME/"Movies"]
 BIG_THRESHOLD = 100 * 1024 * 1024
 
 # ring segment + card accent per category — monochromatic maroon shades
-SEG = {"system":"#5E1622", "browser":"#8A2A38", "dev":"#B5606A"}
+SEG = {"system":"#5E1622", "browser":"#8A2A38", "dev":"#B5606A", "adobe":"#C77B4A"}
 
 CARD_HELP = {
     "system":  "App caches & log files macOS rebuilds automatically. Safe to delete — frees space, apps just re-cache.",
     "browser": "Cached web data for Chrome/Safari/Firefox. You stay logged in; pages just re-download once.",
     "dev":     "Build caches from npm, pip, Homebrew, Xcode. Safe — they regenerate on next build/install.",
+    "adobe":   "Premiere/After Effects media cache (cfa/pek/peak files). Safe to clear — Adobe rebuilds them on next preview. Does NOT remove your extension licenses or settings.",
 }
 
 
@@ -604,7 +624,9 @@ class Cleaner(tk.Tk):
                     self.q.put(("status", f"Cleaning {CATEGORIES[k][1]}…"))   # live per-category
                     freed += self.sizes.get(k, 0)                             # scanned size, no re-du
                     for p in CATEGORIES[k][3]:
-                        if p.exists(): clear_contents(p)
+                        # System Junk clears ~/Library/Caches → protect Adobe CEP extension data
+                        # (licenses) from being wiped. Other categories clear fully.
+                        if p.exists(): clear_contents(p, protect=CACHE_PROTECT if k == "system" else None)
                     self.q.put(("size", (k, 0)))
             except Exception as e:
                 self.q.put(("status", f"⚠ Clean error: {e}"))
