@@ -1,8 +1,9 @@
 name: Build macOS (PKG / DMG / ZIP)
 
-# Build on an OLDER runner (macOS 14 Sonoma) so the bundled Python/Tk dylibs get a
-# low minimum-OS (minos 14). A build made on macOS 26 has minos 26 and silently
-# refuses to launch on Sonoma/Sequoia clients — this CI is the reliable fix.
+# Build on the INTEL runner (macos-13) with a python.org-style Python (low minos) so the
+# app is an x86_64 bundle that runs on EVERY Mac — Intel natively + Apple Silicon via
+# Rosetta — down to macOS 10.15 Catalina (Darwin 19). The previous arm64 build (macos-14)
+# was Apple-Silicon-only AND minos 14, so it refused to launch on Intel / older macOS.
 
 on:
   push:
@@ -14,22 +15,25 @@ permissions:
 
 jobs:
   build-macos:
-    runs-on: macos-14      # Sonoma -> minos 14 -> runs on macOS 14, 15 (Sequoia) and 26
+    runs-on: macos-13      # INTEL runner -> x86_64 app (runs on Intel natively + Apple Silicon via Rosetta)
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "10.13"   # low minos -> launches down to macOS 10.13/10.15 Catalina
     steps:
       - uses: actions/checkout@v5
 
-      - name: Setup Python 3.12 + Tk
-        run: |
-          brew install python-tk@3.12 || true
-          echo "/opt/homebrew/bin" >> $GITHUB_PATH
+      - name: Setup Python 3.11 (python.org build, bundled Tk, low minos)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
       - name: Install build deps
         run: |
-          python3.12 -m pip install --upgrade --ignore-installed pyinstaller certifi pillow --break-system-packages
+          python -m pip install --upgrade pip
+          python -m pip install --upgrade pyinstaller certifi pillow
 
       - name: Generate app icon (.icns)
         run: |
-          python3.12 - <<'PY'
+          python - <<'PY'
           from PIL import Image; import os
           sz = 1024; icon = Image.new("RGBA", (sz, sz), (0, 0, 0, 0))
           m = Image.open("assets/icon.png").convert("RGBA"); h = m.height
@@ -44,17 +48,24 @@ jobs:
 
       - name: Read version
         id: ver
-        run: echo "v=$(python3.12 -c "import re;print(re.search(r'APP_VERSION\s*=\s*\"([^\"]+)\"',open('zh_cleaner.py').read()).group(1))")" >> "$GITHUB_OUTPUT"
+        run: echo "v=$(python -c "import re;print(re.search(r'APP_VERSION\s*=\s*\"([^\"]+)\"',open('zh_cleaner.py').read()).group(1))")" >> "$GITHUB_OUTPUT"
 
       - name: Build .app (PyInstaller)
         run: |
-          python3.12 -m PyInstaller --noconfirm --clean --windowed \
+          python -m PyInstaller --noconfirm --clean --windowed \
             --name "ZH MacCleaner" \
             --icon AppIcon.icns \
             --osx-bundle-identifier com.zhmo.maccleaner \
             --add-data "assets:assets" \
             --hidden-import certifi --collect-data certifi \
             zh_cleaner.py
+
+      - name: Verify arch + minimum macOS
+        run: |
+          BIN="dist/ZH MacCleaner.app/Contents/MacOS/ZH MacCleaner"
+          echo "Architectures:"; lipo -archs "$BIN" || file "$BIN"
+          echo "Minimum OS (LC_BUILD_VERSION / LC_VERSION_MIN_MACOSX):"
+          otool -l "$BIN" | grep -A3 -E "LC_BUILD_VERSION|LC_VERSION_MIN_MACOSX" | grep -E "minos|version" | head
 
       - name: Ad-hoc codesign
         run: |
