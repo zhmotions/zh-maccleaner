@@ -37,7 +37,7 @@ elif "__file__" in globals():
 else:
     APP_DIR = Path.cwd()
 
-APP_VERSION = "1.0.7"
+APP_VERSION = "1.0.8"
 SITE        = "https://www.zhmotions.com"
 # Same update system as ZH Downloader: zhmotions.com FIRST, GitHub as fallback.
 #   version.json -> {"version":"1.1","download_url":"https://.../ZH-MacCleaner.dmg","notes":"..."}
@@ -49,6 +49,11 @@ UPDATE_SOURCES = [
 LICENSE_URL   = "https://zhmotions.com/api/license/verify"   # non-www + no .php (server strips it; redirects drop POST body)
 LIC_FILE      = HOME/".config/zhmaccleaner/license.json"
 PRO_FEATURES  = {"uninstall", "dupes", "maint"}     # locked until Pro
+# ── In-app review prompt (after a few days of use) ──
+REVIEW_URL    = "https://zhmotions.com/api.php?action=review_submit"
+REVIEW_FILE   = HOME/".config/zhmaccleaner/review.json"
+REVIEW_AFTER_DAYS = 3
+APP_SLUG      = "maccleaner"
 GRACE_DAYS    = 14                                  # offline grace after last good check
 
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
@@ -338,6 +343,7 @@ class Cleaner(tk.Tk):
         self.after(300, self.scan_all)         # auto-scan on launch
         self.after(2500, lambda: self.check_updates(silent=True))  # quiet update check
         self.after(1500, self._reverify_license)   # refresh Pro status online
+        self.after(4000, self._maybe_review)       # ask for a review after a few days
         self._trash_size()
 
     # ── UI ──
@@ -958,6 +964,105 @@ class Cleaner(tk.Tk):
             self.lic.update({"valid": bool(ok), "plan": plan or "free", "checked": time.time()})
             self._save_license(); self.q.put(("license_changed", None))
         threading.Thread(target=run, daemon=True).start()
+
+    # ── In-app review prompt ────────────────────────────────────────────
+    def _review_state(self):
+        try: return json.loads(REVIEW_FILE.read_text())
+        except Exception: return {}
+
+    def _review_save(self, d):
+        try:
+            REVIEW_FILE.parent.mkdir(parents=True, exist_ok=True)
+            REVIEW_FILE.write_text(json.dumps(d))
+        except Exception: pass
+
+    def _maybe_review(self):
+        st = self._review_state()
+        now = time.time()
+        if not st.get("first_run"):
+            st["first_run"] = now; self._review_save(st); return    # start the clock on first launch
+        if st.get("status") == "done": return
+        if now < st.get("snooze_until", 0): return
+        if now - st.get("first_run", now) < REVIEW_AFTER_DAYS * 86400: return
+        try: self._show_review()
+        except Exception: pass
+
+    def _show_review(self):
+        win = tk.Toplevel(self); win.title("Enjoying ZH MacCleaner?")
+        win.configure(bg=C["BG"]); win.resizable(False, False)
+        try: win.transient(self)
+        except Exception: pass
+        W, H = 400, 360
+        try:
+            x = self.winfo_rootx() + (self.winfo_width() - W)//2
+            y = self.winfo_rooty() + (self.winfo_height() - H)//3
+            win.geometry(f"{W}x{H}+{max(0,x)}+{max(0,y)}")
+        except Exception: win.geometry(f"{W}x{H}")
+
+        tk.Label(win, text="Enjoying ZH MacCleaner?", bg=C["BG"], fg=C["TEXT"],
+                 font=(UIFONT, 16, "bold")).pack(anchor="w", padx=22, pady=(20, 2))
+        tk.Label(win, text="Tap the stars and leave a quick review — it really helps.",
+                 bg=C["BG"], fg=C["MUTED"], font=(UIFONT, 10), wraplength=356, justify="left").pack(anchor="w", padx=22)
+
+        state = {"rating": 0}
+        stars_row = tk.Frame(win, bg=C["BG"]); stars_row.pack(anchor="w", padx=20, pady=(12, 6))
+        star_lbls = []
+        def paint(n):
+            for i, s in enumerate(star_lbls):
+                s.config(fg=(C["GOLD"] if i < n else C["BORDER"]))
+        def pick(n):
+            state["rating"] = n; paint(n)
+        for i in range(5):
+            s = tk.Label(stars_row, text="★", bg=C["BG"], fg=C["BORDER"], font=(UIFONT, 30), cursor="pointinghand")
+            s.pack(side="left", padx=2); s.bind("<Button-1>", lambda e, n=i+1: pick(n))
+            star_lbls.append(s)
+
+        tk.Label(win, text="Your name", bg=C["BG"], fg=C["MUTED"], font=(UIFONT, 9)).pack(anchor="w", padx=22)
+        name_e = tk.Entry(win, font=(UIFONT, 12), bg=C["SURF"], fg=C["TEXT"], relief="flat",
+                          highlightthickness=1, highlightbackground=C["BORDER"], highlightcolor=C["GOLD"])
+        name_e.pack(fill="x", padx=22, ipady=5, pady=(2, 8))
+        cmt = tk.Text(win, height=3, font=(UIFONT, 11), bg=C["SURF"], fg=C["TEXT"], relief="flat",
+                      highlightthickness=1, highlightbackground=C["BORDER"], highlightcolor=C["GOLD"], wrap="word")
+        cmt.pack(fill="x", padx=22, pady=(0, 4))
+        msg = tk.Label(win, text="", bg=C["BG"], fg=C["MUTED"], font=(UIFONT, 9)); msg.pack(anchor="w", padx=22)
+
+        btns = tk.Frame(win, bg=C["BG"]); btns.pack(fill="x", padx=20, pady=(6, 16), side="bottom")
+        def later():
+            st = self._review_state(); st["snooze_until"] = time.time() + 3*86400; self._review_save(st); win.destroy()
+        def never():
+            st = self._review_state(); st["status"] = "done"; self._review_save(st); win.destroy()
+        def submit():
+            name = name_e.get().strip(); comment = cmt.get("1.0", "end").strip(); rating = state["rating"]
+            if rating < 1: msg.config(text="Please tap the stars to rate.", fg=C["GOLD"]); return
+            if len(name) < 2: msg.config(text="Please enter your name.", fg=C["GOLD"]); return
+            msg.config(text="Sending…", fg=C["MUTED"])
+            def run():
+                ok = False
+                try:
+                    body = urllib.parse.urlencode({"app": APP_SLUG, "name": name, "rating": rating, "comment": comment}).encode()
+                    req = urllib.request.Request(REVIEW_URL, data=body,
+                          headers={"User-Agent": UA, "Content-Type": "application/x-www-form-urlencoded"})
+                    data = json.loads(urllib.request.urlopen(req, timeout=15, context=SSL_CTX).read().decode())
+                    ok = (data.get("status") == "success")
+                except Exception: ok = False
+                def done():
+                    if ok:
+                        st = self._review_state(); st["status"] = "done"; self._review_save(st)
+                        msg.config(text="Thank you! ★", fg=C["GOLD"]); win.after(900, win.destroy)
+                    else:
+                        msg.config(text="Couldn't send — check internet and retry.", fg=C["RED"])
+                self.after(0, done)
+            threading.Thread(target=run, daemon=True).start()
+
+        tk.Label(btns, text="Maybe later", bg=C["BG"], fg=C["MUTED"], font=(UIFONT, 10),
+                 cursor="pointinghand").pack(side="left")
+        tk.Label(btns, text="No thanks", bg=C["BG"], fg=C["MUTED"], font=(UIFONT, 10),
+                 cursor="pointinghand").pack(side="left", padx=14)
+        send = tk.Label(btns, text="  Post review  ", bg=C["GOLD"], fg="#fff", font=(UIFONT, 11, "bold"),
+                        cursor="pointinghand", padx=6, pady=7); send.pack(side="right")
+        send.bind("<Button-1>", lambda e: submit())
+        btns.winfo_children()[0].bind("<Button-1>", lambda e: later())
+        btns.winfo_children()[1].bind("<Button-1>", lambda e: never())
 
     def activate_license(self, key):
         key = key.strip()
