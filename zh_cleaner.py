@@ -37,7 +37,7 @@ elif "__file__" in globals():
 else:
     APP_DIR = Path.cwd()
 
-APP_VERSION = "1.0.9"
+APP_VERSION = "1.0.10"
 SITE        = "https://www.zhmotions.com"
 # Same update system as ZH Downloader: zhmotions.com FIRST, GitHub as fallback.
 #   version.json -> {"version":"1.1","download_url":"https://.../ZH-MacCleaner.dmg","notes":"..."}
@@ -108,7 +108,10 @@ def move_to_trash(path):
 # Cache subfolders we must NEVER wipe — they hold Adobe CEP extension data (localStorage),
 # where panels like ZH Script Studio keep their license/activation + settings. Wiping
 # ~/Library/Caches blindly logs the user out of every CEP extension.
-CACHE_PROTECT = ["CSXS", "Adobe", "com.adobe.cep", "com.adobe.csxs", "cep"]
+# NOTE: "Adobe" is deliberately NOT here — ~/Library/Caches/Adobe is pure regenerable
+# render cache (After Effects disk cache alone can be tens of GB) and holds no license.
+# The CEP license lives in the separate CSXS / com.adobe.cep entries, which we keep.
+CACHE_PROTECT = ["CSXS", "com.adobe.cep", "com.adobe.csxs", "cep"]
 
 def clear_contents(path, protect=None):
     """Delete a dir's contents with native rm, time-bounded so a busy/locked cache
