@@ -37,7 +37,7 @@ elif "__file__" in globals():
 else:
     APP_DIR = Path.cwd()
 
-APP_VERSION = "1.0.10"
+APP_VERSION = "1.1.1"
 SITE        = "https://www.zhmotions.com"
 # Same update system as ZH Downloader: zhmotions.com FIRST, GitHub as fallback.
 #   version.json -> {"version":"1.1","download_url":"https://.../ZH-MacCleaner.dmg","notes":"..."}
@@ -51,6 +51,9 @@ LIC_FILE      = HOME/".config/zhmaccleaner/license.json"
 PRO_FEATURES  = {"uninstall", "dupes", "maint"}     # locked until Pro
 # ── In-app review prompt (after a few days of use) ──
 REVIEW_URL    = "https://zhmotions.com/api.php?action=review_submit"
+# Hostinger's firewall serves flagged IPs a 403 HTML challenge on direct POSTs (the "network problem"
+# reports) — the Cloudflare Worker relay forwards from a clean IP, same as SMS/STT.
+REVIEW_URL_FALLBACK = "https://api-relay-2.zhmotionspanel.workers.dev/api.php?action=review_submit"
 REVIEW_FILE   = HOME/".config/zhmaccleaner/review.json"
 REVIEW_AFTER_DAYS = 3
 APP_SLUG      = "maccleaner"
@@ -101,9 +104,21 @@ def dir_size(path):
         return 0
 
 def move_to_trash(path):
-    p = str(path).replace('"','\\"')
-    subprocess.run(["osascript","-e",
-        f'tell application "Finder" to move (POSIX file "{p}") to trash'], capture_output=True)
+    """Move a path to Trash. Returns True only if it's actually gone afterwards — so callers can
+    report leftovers that couldn't be removed (running app / permission) instead of a false success."""
+    p = str(path)
+    pe = p.replace('"','\\"')
+    r = subprocess.run(["osascript","-e",
+        f'tell application "Finder" to move (POSIX file "{pe}") to trash'], capture_output=True)
+    if r.returncode == 0 and not os.path.exists(p):
+        return True
+    # Finder refused (locked/permission) → fall back to a plain move into ~/.Trash via mv.
+    try:
+        trash = HOME/".Trash"
+        subprocess.run(["bash","-c",'mv -f "$0" "$1/" 2>/dev/null', p, str(trash)], timeout=30)
+    except Exception:
+        pass
+    return not os.path.exists(p)
 
 # Cache subfolders we must NEVER wipe — they hold Adobe CEP extension data (localStorage),
 # where panels like ZH Script Studio keep their license/activation + settings. Wiping
@@ -362,8 +377,11 @@ class Cleaner(tk.Tk):
             except Exception:
                 pass
         name = tk.Frame(head, bg=C["HEADER"]); name.pack(side="left")
-        tk.Label(name, text="ZH MacCleaner", bg=C["HEADER"], fg=C["MAROON"],
-                 font=(UIFONT, 19, "bold")).pack(anchor="w")
+        titlerow = tk.Frame(name, bg=C["HEADER"]); titlerow.pack(anchor="w")
+        tk.Label(titlerow, text="ZH MacCleaner", bg=C["HEADER"], fg=C["MAROON"],
+                 font=(UIFONT, 19, "bold")).pack(side="left")
+        tk.Label(titlerow, text=f"  v{APP_VERSION}", bg=C["HEADER"], fg=C["MUTED"],
+                 font=(UIFONT, 11, "bold")).pack(side="left", pady=(6,0))
         tk.Label(name, text="keep your Mac clean", bg=C["HEADER"], fg=C["MUTED"],
                  font=(UIFONT, 10)).pack(anchor="w", pady=(1,0))
         # subtle bottom divider
@@ -385,7 +403,7 @@ class Cleaner(tk.Tk):
             b.bind("<Enter>", lambda e,k=key,w=b: (w.config(bg="#e3d0d4") if k!=self.active_view else None))
             b.bind("<Leave>", lambda e,k=key,w=b: (w.config(bg=C["SIDEBAR"]) if k!=self.active_view else None))
             self.nav_btns[key] = b
-        tk.Label(side, text="v1.0 · safe mode", bg=C["SIDEBAR"], fg=C["BORDER"],
+        tk.Label(side, text=f"v{APP_VERSION} · safe mode", bg=C["SIDEBAR"], fg=C["BORDER"],
                  font=(UIFONT, 9)).pack(side="bottom", pady=12)
 
         # Content area
@@ -647,10 +665,19 @@ class Cleaner(tk.Tk):
             except Exception as e:
                 self.q.put(("status", f"⚠ Clean error: {e}"))
             finally:                                                          # ALWAYS finish
-                if remaining_tot > 5 * 1024 * 1024:   # >5 MB still there → explain why
-                    msg = (f"✅ Freed {human(freed)}. {human(remaining_tot)} still in use — "
-                           f"quit Chrome/Safari/Adobe (they rebuild cache live) & re-clean. "
-                           f"Adobe extension data is protected on purpose.")
+                if remaining_tot > 5 * 1024 * 1024:   # >5 MB still there → explain why (both real causes)
+                    if freed < remaining_tot * 0.2:
+                        # Barely anything went down. Two real causes: (a) an open app (Chrome/Safari/
+                        # Adobe) rebuilds its cache the instant we delete it, or (b) macOS is blocking
+                        # deletes without Full Disk Access. State both so the client can fix it.
+                        tip = "" if fda_granted() else (" • or grant Full Disk Access: System Settings → "
+                              "Privacy & Security → Full Disk Access → + → add ZH MacCleaner, then reopen it")
+                        msg = (f"⚠ Freed {human(freed)} — most of it came back. Quit Chrome / Safari / "
+                               f"Adobe (they rebuild cache live) & re-clean" + tip + ".")
+                    else:
+                        msg = (f"✅ Freed {human(freed)}. {human(remaining_tot)} still in use — "
+                               f"quit Chrome/Safari/Adobe (they rebuild cache live) & re-clean. "
+                               f"Adobe extension data is protected on purpose.")
                 else:
                     msg = f"✅ Cleaned. Freed {human(freed)}."
                 self.q.put(("status", msg))
@@ -737,9 +764,11 @@ class Cleaner(tk.Tk):
             f"Move {len(picks)} file(s) ({human(tot)}) to Trash?\nRecoverable from Trash."): return
         self.q.put(("busy", True))
         def run():
-            for fp in picks: move_to_trash(fp)
-            self.q.put(("big", [x for x in self.big_files if x[0] not in picks]))
-            self.q.put(("status", f"✅ Moved {len(picks)} file(s) to Trash."))
+            okp = [fp for fp in picks if move_to_trash(fp)]
+            fail = len(picks) - len(okp)
+            self.q.put(("big", [x for x in self.big_files if x[0] not in okp]))
+            self.q.put(("status", f"✅ Moved {len(okp)} file(s) to Trash."
+                        + (f" ⚠ {fail} couldn't be moved (in use / permission)." if fail else "")))
             self.q.put(("busy", False)); self._trash_size()
         threading.Thread(target=run, daemon=True).start()
 
@@ -806,9 +835,22 @@ class Cleaner(tk.Tk):
         if not messagebox.askyesno("Uninstall app?", msg): return
         self.q.put(("busy", True)); self.q.put(("status", f"Uninstalling {name}…"))
         def run():
-            move_to_trash(path)
-            for p in left: move_to_trash(str(p))
-            self.q.put(("status", f"✅ {name} + {len(left)} leftover(s) → Trash."))
+            fails = []
+            if not move_to_trash(path): fails.append(path)
+            done = 0
+            for p in left:
+                if move_to_trash(str(p)): done += 1
+                else: fails.append(str(p))
+            if fails:
+                app_stuck = path in fails
+                why = ("quit “%s” if it's still running, then retry" % name) if app_stuck \
+                      else "some items need admin rights or belong to a running app"
+                self.q.put(("status",
+                    f"⚠ {name}: removed {done}/{len(left)} leftover(s)"
+                    + ("" if app_stuck else " + the app")
+                    + f". {len(fails)} couldn't be trashed — {why}."))
+            else:
+                self.q.put(("status", f"✅ {name} + {len(left)} leftover(s) → Trash."))
             self.q.put(("busy", False)); self._trash_size()
         threading.Thread(target=run, daemon=True).start()
 
@@ -864,8 +906,10 @@ class Cleaner(tk.Tk):
             f"Move {len(picks)} duplicate file(s) to Trash?\nRecoverable from Trash."): return
         self.q.put(("busy", True))
         def run():
-            for p in picks: move_to_trash(p)
-            self.q.put(("status", f"✅ {len(picks)} duplicate(s) → Trash."))
+            ok = sum(1 for p in picks if move_to_trash(p))
+            fail = len(picks) - ok
+            self.q.put(("status", f"✅ {ok} duplicate(s) → Trash."
+                        + (f" ⚠ {fail} couldn't be moved (in use / permission)." if fail else "")))
             self.q.put(("busy", False)); self._trash_size()
             self.q.put(("rescan_dupes", None))
         threading.Thread(target=run, daemon=True).start()
@@ -1053,20 +1097,26 @@ class Cleaner(tk.Tk):
             if len(name) < 2: msg.config(text="Please enter your name.", fg=C["GOLD"]); return
             msg.config(text="Sending…", fg=C["MUTED"])
             def run():
-                ok = False
-                try:
-                    body = urllib.parse.urlencode({"app": APP_SLUG, "name": name, "rating": rating, "comment": comment}).encode()
-                    req = urllib.request.Request(REVIEW_URL, data=body,
-                          headers={"User-Agent": UA, "Content-Type": "application/x-www-form-urlencoded"})
-                    data = json.loads(urllib.request.urlopen(req, timeout=15, context=SSL_CTX).read().decode())
-                    ok = (data.get("status") == "success")
-                except Exception: ok = False
+                ok = False; err = "Couldn't send — check your internet and retry."
+                body = urllib.parse.urlencode({"app": APP_SLUG, "name": name, "rating": rating, "comment": comment}).encode()
+                # Direct first; if the host firewall serves its HTML challenge (JSON parse fails /
+                # HTTPError), retry through the clean-IP Worker relay.
+                for url in (REVIEW_URL, REVIEW_URL_FALLBACK):
+                    try:
+                        req = urllib.request.Request(url, data=body,
+                              headers={"User-Agent": UA, "Content-Type": "application/x-www-form-urlencoded"})
+                        data = json.loads(urllib.request.urlopen(req, timeout=15, context=SSL_CTX).read().decode())
+                        ok = (data.get("status") == "success")
+                        if not ok and data.get("message"): err = str(data.get("message"))   # real reason (e.g. already reviewed), not a fake network error
+                        break                       # got a JSON answer (success OR rejection) → stop
+                    except Exception:
+                        ok = False                  # challenge/HTML/network → try the relay next
                 def done():
                     if ok:
                         st = self._review_state(); st["status"] = "done"; self._review_save(st)
                         msg.config(text="Thank you! ★", fg=C["GOLD"]); win.after(900, win.destroy)
                     else:
-                        msg.config(text="Couldn't send — check internet and retry.", fg=C["RED"])
+                        msg.config(text=err, fg=C["RED"])
                 self.after(0, done)
             threading.Thread(target=run, daemon=True).start()
 
@@ -1217,7 +1267,7 @@ class Cleaner(tk.Tk):
         if self.logo_img:
             tk.Label(brand, image=self.logo_img, bg=C["SURF"]).pack(side="left", padx=(0,10))
         col = tk.Frame(brand, bg=C["SURF"]); col.pack(side="left")
-        tk.Label(col, text="ZH MacCleaner  ·  v1.0", bg=C["SURF"], fg=C["MAROON"],
+        tk.Label(col, text=f"ZH MacCleaner  ·  v{APP_VERSION}", bg=C["SURF"], fg=C["MAROON"],
                  font=(UIFONT, 12, "bold")).pack(anchor="w")
         tk.Label(col, text="Made by ZH Motions", bg=C["SURF"], fg=C["MUTED"],
                  font=(UIFONT, 10)).pack(anchor="w")

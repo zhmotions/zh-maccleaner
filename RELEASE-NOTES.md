@@ -1,53 +1,14 @@
-# ZH MacCleaner 1.0.3
+# ZH MacCleaner 1.1.1
 
-A safe, simple Mac cleaner by ZH Motions.
+## Fixed
+- Blank/white window on new macOS (rebuilt with modern Tk 8.6) — UI renders correctly again.
+- Review popup: retries through a clean-IP relay when the host firewall blocks the direct post, and
+  shows the server's real reply (e.g. "already reviewed") instead of a generic network error.
+- Uninstaller and deletes are honest: shows what couldn't be removed (running app / permission), with
+  a fallback move to Trash when Finder refuses.
+- Cache clean explains when caches came back (open Chrome/Safari/Adobe rebuilds them live) and when
+  Full Disk Access is needed.
 
-**What's new in 1.0.3**
-- **Now opens on macOS Sonoma (14) and Sequoia (15)** — built on an older macOS runner so it runs on every modern Mac (earlier builds silently failed to launch on older macOS).
-- Fixed **"Couldn't reach the license server"** on fresh Macs — bundles CA certificates (certifi) so HTTPS license checks work everywhere, with an automatic retry.
-- `.pkg` installer auto-removes the macOS quarantine flag → no "damaged" warning after install.
-
-## ⬇️ How to install (read this!)
-
-### ✅ Recommended — use the **.pkg** installer (auto-fixes the "damaged" warning)
-1. Download **`ZH-MacCleaner-1.0.pkg`** below.
-2. **Right-click** the file → **Open** → in the popup click **Open** again.
-   *(One-time step — macOS asks once for apps outside the App Store.)*
-3. Click **Continue → Install** → enter your Mac password.
-4. Done. Open **ZH MacCleaner** from Applications / Launchpad — it just opens. ✅
-
-> The `.pkg` installs the app cleanly and automatically removes the macOS quarantine flag, so you will **not** see the "damaged" error.
-
-### ⚠️ If you use the `.dmg` or `.zip` instead
-macOS may say **"ZH MacCleaner is damaged and can't be opened."**
-This is **not** a real problem — just macOS blocking an unsigned app. Fix it one of two ways:
-
-**Easiest:** open **Terminal**, paste this, press Enter:
-```
-xattr -cr "/Applications/ZH MacCleaner.app"
-```
-Then open the app normally.
-
-**Or:** after the warning → **System Settings → Privacy & Security** → scroll down → **Open Anyway**.
-
----
-
-## Features
-- 🧹 **Cleanup** — app caches, logs, browser caches (auto-scans on launch)
-- 📦 **Large Files** — find files > 100 MB, send to Trash
-- 🗑️ **Uninstaller** — remove an app + all its leftover files
-- 👯 **Duplicates** — find identical files, trash the extras
-- 🛠 **Maintenance** — free RAM, flush DNS, reindex Spotlight, rebuild Launch DB
-- ℹ️ In-app Help & tooltips explaining every tool
-
-## Notes
-- **Safe by design:** only known cache folders are deleted; your files go to the Trash (recoverable).
-- For full cache cleanup, grant **Full Disk Access** (Settings → Privacy & Security → Full Disk Access → add ZH MacCleaner).
-- Requires **macOS 14 (Sonoma) or newer**, Apple Silicon.
-
-## Downloads
-| File | Use this when |
-|------|---------------|
-| **ZH-MacCleaner-1.0.pkg** | ✅ Recommended — easiest, no "damaged" error |
-| ZH-MacCleaner-1.0.dmg | Classic drag-to-Applications (needs the fix above) |
-| ZH-MacCleaner-1.0-macOS.zip | Plain app (needs the fix above) |
+## App
+- Universal (Intel + Apple Silicon), macOS 11+. Version shown in the header/sidebar/About.
+- Ships as .zip containing the .app, the .pkg installer, and an install README.
