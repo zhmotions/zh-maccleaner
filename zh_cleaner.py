@@ -37,13 +37,16 @@ elif "__file__" in globals():
 else:
     APP_DIR = Path.cwd()
 
-APP_VERSION = "1.1.1"
+APP_VERSION = "1.1.2"
 SITE        = "https://www.zhmotions.com"
 # Same update system as ZH Downloader: zhmotions.com FIRST, GitHub as fallback.
 #   version.json -> {"version":"1.1","download_url":"https://.../ZH-MacCleaner.dmg","notes":"..."}
 UPDATE_SOURCES = [
     ("zhmotions", "https://zhmotions.com/maccleaner/version.json", "zhm"),
-]   # zhmotions.com only — no third-party
+    # Hostinger's firewall 403s Python's TLS fingerprint (curl passes, urllib doesn't) → the direct
+    # check fails for many clients. GitHub Releases is the clean fallback (tag_name = version).
+    ("github", "https://api.github.com/repos/zhmotions/zh-maccleaner/releases/latest", "gh"),
+]
 
 # ── Licensing: free app, Pro features unlocked by a key (self-hosted) ──
 LICENSE_URL   = "https://zhmotions.com/api/license/verify"   # non-www + no .php (server strips it; redirects drop POST body)
@@ -994,20 +997,20 @@ class Cleaner(tk.Tk):
             pass
 
     def _verify_online(self, key):
-        # Retry a few times: the host's anti-bot (LiteSpeed reCAPTCHA) can return an
-        # HTML challenge on the first hit from a cold IP, which isn't JSON. A quick
-        # retry almost always succeeds once the IP is warmed.
+        # Direct can 403: the host firewall blocks Python's TLS fingerprint / serves an HTML
+        # challenge. Alternate direct → Worker relay (clean IP, /api/ is on its allowlist).
         last_err = ""
-        for attempt in range(3):
+        relay = LICENSE_URL.replace("https://zhmotions.com", "https://api-relay-2.zhmotionspanel.workers.dev")
+        for attempt, url in enumerate((LICENSE_URL, relay, relay)):
             try:
                 body = urllib.parse.urlencode({
                     "key": key, "app": "maccleaner", "device": device_id(), "v": APP_VERSION}).encode()
-                req = urllib.request.Request(LICENSE_URL, data=body, headers={
+                req = urllib.request.Request(url, data=body, headers={
                     "User-Agent": UA,
                     "Accept": "application/json",
                     "Content-Type": "application/x-www-form-urlencoded"})   # so PHP fills $_POST
                 raw = urllib.request.urlopen(req, timeout=20, context=SSL_CTX).read().decode()
-                data = json.loads(raw)   # bot-challenge HTML -> JSONDecodeError -> retry
+                data = json.loads(raw)   # bot-challenge HTML -> JSONDecodeError -> next source
                 return bool(data.get("valid")), (data.get("plan") or "pro"), (data.get("message") or "")
             except Exception as e:
                 last_err = str(e)
