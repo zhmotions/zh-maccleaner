@@ -37,16 +37,20 @@ elif "__file__" in globals():
 else:
     APP_DIR = Path.cwd()
 
-APP_VERSION = "1.1.2"
+APP_VERSION = "1.1.3"
 SITE        = "https://www.zhmotions.com"
 # Same update system as ZH Downloader: zhmotions.com FIRST, GitHub as fallback.
 #   version.json -> {"version":"1.1","download_url":"https://.../ZH-MacCleaner.dmg","notes":"..."}
 UPDATE_SOURCES = [
+    # Relay FIRST — the Cloudflare Worker forwards server-side, so Hostinger's firewall
+    # (which 403s Python's TLS fingerprint for many client IPs) never sees the client.
+    ("relay", "https://api-relay-2.zhmotionspanel.workers.dev/api.php?action=app_version&app=maccleaner", "zhm"),
     ("zhmotions", "https://zhmotions.com/maccleaner/version.json", "zhm"),
-    # Hostinger's firewall 403s Python's TLS fingerprint (curl passes, urllib doesn't) → the direct
-    # check fails for many clients. GitHub Releases is the clean fallback (tag_name = version).
     ("github", "https://api.github.com/repos/zhmotions/zh-maccleaner/releases/latest", "gh"),
 ]
+MAC_DL    = "https://zhmotions.com/maccleaner/download"
+UPD_DIR   = HOME/".config"/"zhmaccleaner"
+UPD_STATE = UPD_DIR/"update.json"
 
 # ── Licensing: free app, Pro features unlocked by a key (self-hosted) ──
 LICENSE_URL   = "https://zhmotions.com/api/license/verify"   # non-www + no .php (server strips it; redirects drop POST body)
@@ -1298,7 +1302,9 @@ class Cleaner(tk.Tk):
                     if not latest:
                         continue
                     if self._is_newer(latest, APP_VERSION):
-                        self.q.put(("update", (latest, dl, notes)))
+                        # Self-installing update: download the pkg silently NOW; the next
+                        # app start opens the installer automatically.
+                        self._auto_update_fetch(latest, dl, notes)
                     elif not silent:
                         self.q.put(("status", f"✅ You're on the latest (v{APP_VERSION})."))
                     return  # first source that answered wins
@@ -1307,6 +1313,34 @@ class Cleaner(tk.Tk):
             if not silent:
                 self.q.put(("status", "⚠ Update check failed (no internet or site offline)."))
         threading.Thread(target=run, daemon=True).start()
+
+    def _auto_update_fetch(self, latest, dl, notes):
+        """Runs in the update-check thread. Background pkg download → recorded in
+        UPD_STATE; _pending_update_install() opens it on the next start. Any failure
+        falls back to the old ask-dialog so updates are never lost."""
+        try:
+            try:
+                st = json.loads(UPD_STATE.read_text()) if UPD_STATE.exists() else {}
+            except Exception:
+                st = {}
+            if st.get("ver") == latest and Path(st.get("path", "")).exists():
+                self.q.put(("status", f"⬇ Update v{latest} ready — restart the app to install"))
+                return
+            UPD_DIR.mkdir(parents=True, exist_ok=True)
+            dest = UPD_DIR / f"ZH-MacCleaner-{latest}.pkg"
+            url = f"{MAC_DL}?v={latest}"   # download.php serves the newest pkg; ?v busts caches
+            self.q.put(("status", f"⬇ Downloading update v{latest} in the background…"))
+            p = subprocess.run(["curl", "-fSL", "--retry", "2", "-m", "600", "-A", UA,
+                                "-o", str(dest), url], capture_output=True)
+            if p.returncode != 0 or not dest.exists() or dest.stat().st_size < 2_000_000:
+                try: dest.unlink(missing_ok=True)
+                except Exception: pass
+                self.q.put(("update", (latest, dl, notes)))   # manual fallback
+                return
+            UPD_STATE.write_text(json.dumps({"ver": latest, "path": str(dest), "launched": False}))
+            self.q.put(("status", f"⬇ Update v{latest} ready — restart the app and it installs itself"))
+        except Exception:
+            self.q.put(("update", (latest, dl, notes)))
 
     @staticmethod
     def _is_newer(a, b):
@@ -1320,7 +1354,35 @@ class Cleaner(tk.Tk):
             subprocess.run(["open", url])
 
 
+def _pending_update_install():
+    """Before the UI: an update downloaded on a previous run? Open its installer now and
+    exit — 'restart the app = the update installs itself'. One attempt per version."""
+    try:
+        st = json.loads(UPD_STATE.read_text()) if UPD_STATE.exists() else {}
+        ver, path = str(st.get("ver", "")), str(st.get("path", ""))
+        if not ver or not path:
+            return
+        def vt(v): return [int(x) for x in v.split(".") if x.isdigit()]
+        if vt(ver) <= vt(APP_VERSION) or not Path(path).exists():
+            try: Path(path).unlink(missing_ok=True)
+            except Exception: pass
+            try: UPD_STATE.unlink(missing_ok=True)
+            except Exception: pass
+            return
+        if st.get("launched"):
+            return   # user cancelled the installer once — don't nag every start
+        st["launched"] = True
+        UPD_STATE.write_text(json.dumps(st))
+        subprocess.Popen(["open", path])
+        sys.exit(0)
+    except SystemExit:
+        raise
+    except Exception:
+        pass
+
+
 if __name__ == "__main__":
     if sys.platform != "darwin":
         print("ZH Cleaner is built for macOS.")
+    _pending_update_install()
     Cleaner().mainloop()
