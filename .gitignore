@@ -2,13 +2,18 @@
 ZH MacCleaner.app/
 ZH Cleaner.app/
 dist/
+dist-final/
 build/
+build-final/
 icon.iconset/
 AppIcon.icns
 *.spec
 .build-venv/
+.build-venv-u2/
 *.zip
 *.dmg
+*.pkg
+*.bak
 
 # python
 __pycache__/

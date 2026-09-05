@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ZH Cleaner — a safe Mac cleaner (pro UI, ZH Motions theme)
+ZH Cleaner — a safe Mac cleaner (pro UI, ZH Motions "Fetchleaf" brand theme)
 
 Cleans: System junk (caches/logs), Browser caches, Dev junk, Large/old files.
 Safety:
@@ -10,7 +10,7 @@ Safety:
   • Auto-scans on launch and shows sizes BEFORE you clean.
 """
 
-import os, sys, threading, queue, time, subprocess, hashlib, plistlib, json
+import os, sys, threading, queue, time, subprocess, hashlib, plistlib, json, re, shutil
 import urllib.request, urllib.parse, ssl
 
 # SSL context with a real CA bundle. A PyInstaller .app on a fresh client Mac often
@@ -37,7 +37,7 @@ elif "__file__" in globals():
 else:
     APP_DIR = Path.cwd()
 
-APP_VERSION = "1.1.3"
+APP_VERSION = "1.1.7"
 SITE        = "https://www.zhmotions.com"
 # Same update system as ZH Downloader: zhmotions.com FIRST, GitHub as fallback.
 #   version.json -> {"version":"1.1","download_url":"https://.../ZH-MacCleaner.dmg","notes":"..."}
@@ -66,6 +66,71 @@ REVIEW_AFTER_DAYS = 3
 APP_SLUG      = "maccleaner"
 GRACE_DAYS    = 14                                  # offline grace after last good check
 
+# ── Settings + lifetime stats ───────────────────────────────────────────
+SETTINGS_FILE = HOME/".config/zhmaccleaner/settings.json"   # { "exclusions": [paths] }
+STATS_FILE    = HOME/".config/zhmaccleaner/stats.json"      # { "freed": bytes, "runs": n }
+
+def load_settings():
+    try: return json.loads(SETTINGS_FILE.read_text())
+    except Exception: return {}
+
+def save_settings(d):
+    try:
+        SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        SETTINGS_FILE.write_text(json.dumps(d, indent=2))
+    except Exception: pass
+
+def load_stats():
+    try: return json.loads(STATS_FILE.read_text())
+    except Exception: return {"freed": 0, "runs": 0}
+
+def bump_stats(freed_bytes):
+    """Add to the lifetime 'space reclaimed' counter shown on the Cleanup screen."""
+    try:
+        s = load_stats()
+        s["freed"] = int(s.get("freed", 0)) + max(0, int(freed_bytes))
+        s["runs"]  = int(s.get("runs", 0)) + (1 if freed_bytes else 0)
+        STATS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        STATS_FILE.write_text(json.dumps(s))
+    except Exception: pass
+
+# ── Safety: paths ZH Cleaner must NEVER trash, whatever a scan turns up ──
+# The auto-scans (installers, iOS backups, dev junk) pattern-match, so every
+# candidate is filtered through path_protected() before it can be trashed. The
+# manual pick lists (Large Files, Duplicates) also honour the user's own
+# exclusions. move_to_trash() has a last-ditch guard on top of all this.
+def _rp(p):
+    try: return os.path.realpath(os.path.expanduser(str(p)))
+    except Exception: return ""
+
+HARD_PROTECT = [_rp(HOME/x) for x in (
+    "Documents", "Desktop", "Pictures", "Music",
+    "Library/Mobile Documents",              # iCloud Drive
+    "Library/CloudStorage",                  # Dropbox / OneDrive / Google Drive
+    "Library/Keychains", "Library/Group Containers/group.com.apple.notes",
+    "Library/Application Support/AddressBook", "Library/Messages",
+    "Library/Application Support/MobileSync",  # the container — only its children go
+    ".ssh", ".gnupg", ".aws", ".config/gcloud", ".password-store",
+)]
+
+def user_exclusions():
+    return [_rp(p) for p in load_settings().get("exclusions", []) if _rp(p)]
+
+def _under(path, base):
+    return path == base or path.startswith(base.rstrip("/") + "/")
+
+def path_protected(path, hard=True):
+    """True if `path` sits at/under a user exclusion (always) or a HARD_PROTECT
+    root (when hard=True — used by the auto-scans, not the manual pick lists)."""
+    rp = _rp(path)
+    if not rp: return True                       # unresolvable → refuse to touch
+    for base in user_exclusions():
+        if _under(rp, base): return True
+    if hard:
+        for base in HARD_PROTECT:
+            if base and _under(rp, base): return True
+    return False
+
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
       "(KHTML, like Gecko) Version/17.0 Safari/605.1.15")   # Cloudflare blocks bot UAs
 
@@ -80,17 +145,140 @@ def device_id():
         uid = "unknown"
     return hashlib.sha256(uid.encode()).hexdigest()[:16]
 
-# ── Monochromatic palette — every tone is a shade of ONE maroon hue ──
+# ── Fetchleaf palette — ZH Motions brand (leaf greens, gold action, ink) ──
+# Mirrors ZH Downloader's "Fetchleaf" theme: --leaf-* / --ink / --gold* from the
+# brand guide. MAROON/GOLD keys kept (used app-wide) but now hold leaf + gold.
 C = {
-    "BG":"#f7f1f2", "SIDEBAR":"#ead9dd", "HEADER":"#fdfbfb",
-    "SURF":"#ffffff", "SURF2":"#ecdade", "BORDER":"#dfc8cd",
-    "MAROON":"#7A1F2B", "MAROON2":"#9c2a3a",
-    "GOLD":"#7A1F2B", "GOLD2":"#9c2a3a",   # accents = maroon
-    "TEXT":"#2c1014", "MUTED":"#9a767c",   # darkest maroon / muted maroon
-    "GREEN":"#7A1F2B", "RED":"#9c2a3a",
+    "BG":"#f3faef", "SIDEBAR":"#e7f5e0", "HEADER":"#ffffff",   # leaf-050 ground
+    "SURF":"#ffffff", "SURF2":"#e7f5e0", "BORDER":"#a5d698",   # leaf-200 border
+    "MAROON":"#2b6627", "MAROON2":"#388837",   # primary chrome = deep leaf (leaf-800/600)
+    "GOLD":"#c9922f", "GOLD2":"#8f6516",       # action accent = gold / gold-deep
+    "TEXT":"#182b17", "MUTED":"#3f5b3c",       # ink / ink-soft
+    "GREEN":"#388837", "RED":"#b3402e",
 }
-UIFONT = "SF Pro Text"
-MONO   = "SF Mono"
+ON_GOLD  = "#2a1c02"         # readable ink on a gold fill
+UIFONT   = "SF Pro Text"     # body — resolved to Inter (brand text face) at startup
+HEADFONT = "SF Pro Display"  # headings — resolved to Bricolage Grotesque (brand display face)
+MONO     = "SF Mono"
+
+def _pick_family(prefs, fallback):
+    """First installed family out of prefs. Needs a live Tk root, so call it
+    after Tk() exists (App.__init__ does, before the UI is built)."""
+    try:
+        import tkinter.font as _tkfont
+        fams = {f.lower() for f in _tkfont.families()}
+    except Exception:
+        fams = set()
+    return next((p for p in prefs if p.lower() in fams), fallback)
+
+
+def _pbg(w):
+    try: return w.cget("bg")
+    except Exception: return C["BG"]
+
+
+class RoundedButton(tk.Canvas):
+    """Chunky rounded action button — Tk ships none, and on macOS aqua tk.Button
+    ignores -bg entirely (every button rendered as the same grey pill). This
+    draws the ZH Downloader look: a rounded face sitting on a solid colour ledge,
+    with hover / pressed / disabled states. configure(text=…, state=…) compatible.
+        kind: "gold" (primary) · "ghost" (secondary) · "danger"
+    """
+    # kind -> (face colour key, ledge colour key, text colour)
+    _KINDS = {
+        "gold":   ("GOLD",  "GOLD2",  ON_GOLD),
+        "ghost":  ("SURF2", "BORDER", None),      # None -> C["TEXT"]
+        "danger": ("RED",   "RED",    "#ffffff"),
+    }
+
+    def __init__(self, parent, text, command, kind="gold",
+                 pad=(22, 11), radius=11, plinth=4, font=None, **kw):
+        import tkinter.font as _tkfont
+        self._text, self._cmd, self._kind = text, command, kind
+        self._radius, self._plinth = radius, plinth
+        self._font = font or (UIFONT, 11, "bold")
+        self._state, self._hover = "normal", False
+        f = _tkfont.Font(font=self._font)
+        w = f.measure(text) + pad[0] * 2
+        h = f.metrics("linespace") + pad[1] * 2 + plinth
+        # NB: not self._w/_h — tkinter.Misc already uses self._w for the widget
+        # pathname; shadowing it breaks every later Tk call.
+        self._bw, self._bh = w, h
+        super().__init__(parent, width=w, height=h, highlightthickness=0, bd=0,
+                         bg=_pbg(parent), cursor="pointinghand", **kw)
+        self.bind("<Button-1>",        self._press)
+        self.bind("<ButtonRelease-1>", self._release)
+        self.bind("<Enter>", lambda e: self._set_hover(True))
+        self.bind("<Leave>", lambda e: self._set_hover(False))
+        self._draw()
+
+    def _rrect(self, x1, y1, x2, y2, r, **kw):
+        pts = [x1+r, y1, x2-r, y1, x2, y1, x2, y1+r, x2, y2-r, x2, y2, x2-r, y2,
+               x1+r, y2, x1, y2, x1, y2-r, x1, y1+r, x1, y1]
+        return self.create_polygon(pts, smooth=True, **kw)
+
+    def _draw(self, pressed=False):
+        self.delete("all")
+        face_k, ledge_k, fgc = self._KINDS.get(self._kind, self._KINDS["gold"])
+        if self._state == "disabled":
+            face, ledge, fg = C["SURF2"], C["BORDER"], C["MUTED"]
+        else:
+            ledge = C[ledge_k]
+            face  = ledge if self._hover else C[face_k]
+            fg    = fgc or C["TEXT"]
+        drop = self._plinth
+        sink = drop if pressed else 0
+        self._rrect(1, 1 + sink, self._bw - 1, self._bh - 1, self._radius,
+                    fill=ledge, outline=ledge)                       # the ledge
+        self._rrect(1, 1 + sink, self._bw - 1, self._bh - 1 - (drop - sink),
+                    self._radius, fill=face, outline=face)           # the face
+        self.create_text(self._bw / 2,
+                         (1 + sink + self._bh - 1 - (drop - sink)) / 2,
+                         text=self._text, fill=fg, font=self._font)
+
+    def _set_hover(self, on):
+        self._hover = on and self._state != "disabled"
+        self._draw()
+
+    def _press(self, _=None):
+        if self._state != "disabled": self._draw(pressed=True)
+
+    def _release(self, _=None):
+        if self._state == "disabled": return
+        self._draw()
+        if self._cmd: self._cmd()
+
+    def configure(self, **kw):
+        redraw = False
+        if "text" in kw:
+            self._text = kw.pop("text"); redraw = True
+        if "state" in kw:
+            self._state = kw.pop("state"); self._hover = False; redraw = True
+            try: super().configure(
+                cursor="arrow" if self._state == "disabled" else "pointinghand")
+            except Exception: pass
+        if kw: super().configure(**kw)
+        if redraw: self._draw()
+    config = configure
+
+    def cget(self, key):
+        if key == "text":  return self._text
+        if key == "state": return self._state
+        return super().cget(key)
+
+
+def _chip(parent, text, cmd, kind="ghost"):
+    """Small inline button as a tk.Label — unlike tk.Button, a Label honours -bg
+    on macOS aqua, so row actions actually carry the theme colour."""
+    face, fg = {"ghost":  (C["SURF2"], C["TEXT"]),
+                "leaf":   (C["MAROON"], "#ffffff"),
+                "gold":   (C["GOLD"],  ON_GOLD)}.get(kind, (C["SURF2"], C["TEXT"]))
+    lbl = tk.Label(parent, text=f"  {text}  ", bg=face, fg=fg, font=(UIFONT, 10, "bold"),
+                   padx=4, pady=4, cursor="pointinghand")
+    lbl.bind("<Button-1>", lambda e: cmd())
+    lbl.bind("<Enter>", lambda e: lbl.config(bg=C["BORDER"] if kind == "ghost" else C["GOLD2"]))
+    lbl.bind("<Leave>", lambda e: lbl.config(bg=face))
+    return lbl
 
 # ── Helpers ─────────────────────────────────────────────────────────────
 def human(n):
@@ -110,10 +298,25 @@ def dir_size(path):
     except Exception:
         return 0
 
+def _trash_forbidden(rp):
+    """Last-ditch guard: paths this app must never send to Trash, no matter which
+    code path asked. Catches bugs / bad globs before anything irreversible."""
+    home = _rp(HOME)
+    if not rp or rp in ("/", home): return True
+    if not _under(rp, home): return True                 # anything outside ~
+    # never a top-level container itself — only things inside it
+    if os.path.dirname(rp) == home and os.path.basename(rp) in (
+        "Documents", "Desktop", "Pictures", "Music", "Movies",
+        "Downloads", "Library", "Applications", "Public"):
+        return True
+    return False
+
 def move_to_trash(path):
     """Move a path to Trash. Returns True only if it's actually gone afterwards — so callers can
     report leftovers that couldn't be removed (running app / permission) instead of a false success."""
     p = str(path)
+    if _trash_forbidden(_rp(p)):
+        return False
     pe = p.replace('"','\\"')
     r = subprocess.run(["osascript","-e",
         f'tell application "Finder" to move (POSIX file "{pe}") to trash'], capture_output=True)
@@ -210,7 +413,7 @@ def app_leftovers(app_name, app_path):
                 # 2) name match ONLY if the entry starts with the (specific) app name — no loose substring.
                 elif specific_name and (ell == name_l or ell.startswith(name_l + ".") or ell.startswith(name_l + "-")):
                     match = True
-                if match:
+                if match and not path_protected(d/e, hard=False):
                     hits.append(d/e)
         except OSError:
             pass
@@ -235,6 +438,7 @@ def find_duplicates(dirs, min_size=1024*1024):
                 fp = os.path.join(root, f)
                 try:
                     if os.path.islink(fp): continue
+                    if path_protected(fp, hard=False): continue
                     sz = os.path.getsize(fp)
                     if sz >= min_size: by_size.setdefault(sz, []).append(fp)
                 except OSError:
@@ -250,6 +454,54 @@ def find_duplicates(dirs, min_size=1024*1024):
             if len(ps) > 1: groups.append((sz, ps))
     groups.sort(key=lambda g: g[0]*len(g[1]), reverse=True)
     return groups
+
+# ── Old installers in ~/Downloads ──────────────────────────────────────
+def find_old_installers():
+    """.dmg/.pkg/.iso in ~/Downloads older than INSTALLER_AGE_D days. Excludes
+    anything the user protected. Returns [(path, size, mtime)] newest first."""
+    d = HOME/"Downloads"
+    if not d.is_dir(): return []
+    cutoff = time.time() - INSTALLER_AGE_D*86400
+    out = []
+    try:
+        for e in os.listdir(d):
+            if not e.lower().endswith(INSTALLER_EXT): continue
+            fp = d/e
+            try:
+                if fp.is_symlink() or not fp.is_file(): continue
+                st = fp.stat()
+                if st.st_mtime > cutoff: continue
+                if path_protected(fp): continue
+                out.append((str(fp), st.st_size, st.st_mtime))
+            except OSError:
+                pass
+    except OSError:
+        pass
+    out.sort(key=lambda x: x[2], reverse=True)
+    return out
+
+# ── iOS / iPadOS device backups ────────────────────────────────────────
+def find_ios_backups():
+    """Each subfolder of MobileSync/Backup is one device backup. Reads Info.plist
+    for the device name + last-backup date. Returns [(path, size, label, when)]."""
+    if not IOS_BACKUP_DIR.is_dir(): return []
+    out = []
+    for e in sorted(os.listdir(IOS_BACKUP_DIR)):
+        bp = IOS_BACKUP_DIR/e
+        if not bp.is_dir() or path_protected(bp, hard=False): continue
+        name, when = "iOS device", ""
+        try:
+            with open(bp/"Info.plist", "rb") as f:
+                info = plistlib.load(f)
+            name = info.get("Device Name") or info.get("Product Name") or name
+            lbd  = info.get("Last Backup Date")
+            if lbd: when = lbd.strftime("%d %b %Y") if hasattr(lbd, "strftime") else str(lbd)
+            pt = info.get("Product Type") or ""
+            if pt: name = f"{name} ({pt})"
+        except Exception:
+            pass
+        out.append((str(bp), dir_size(bp), name, when))
+    return out
 
 def fda_granted():
     """True ONLY if we can actually read a protected TCC database (i.e. Full Disk Access is on).
@@ -302,7 +554,23 @@ CATEGORIES = {
                 [HOME/".npm/_cacache", HOME/"Library/Caches/Yarn", HOME/"Library/Caches/pip",
                  HOME/"Library/Caches/Homebrew", HOME/"Library/Caches/CocoaPods",
                  HOME/"Library/Developer/Xcode/DerivedData",
+                 HOME/"Library/Developer/CoreSimulator/Caches",
                  HOME/"Library/Developer/Xcode/iOS DeviceSupport"]),
+    # App caches for the usual space hogs. Contents only — you stay signed in, the
+    # app just re-caches. NOT the app's Application Support (that holds real data).
+    "apps":    ("💬", "App Caches", "Slack · Spotify · Zoom · Discord · Teams",
+                [HOME/"Library/Caches/com.tinyspeck.slackmacgap",
+                 HOME/"Library/Application Support/Slack/Cache",
+                 HOME/"Library/Application Support/Slack/Service Worker/CacheStorage",
+                 HOME/"Library/Caches/com.spotify.client",
+                 HOME/"Library/Application Support/Spotify/PersistentCache",
+                 HOME/"Library/Caches/us.zoom.xos",
+                 HOME/"Library/Caches/com.hnc.Discord",
+                 HOME/"Library/Application Support/discord/Cache",
+                 HOME/"Library/Application Support/Microsoft/Teams/Cache",
+                 HOME/"Library/Caches/com.microsoft.teams2",
+                 HOME/"Library/Caches/com.adobe.acc.AdobeDesktopService",
+                 HOME/"Library/Caches/com.apple.dt.Xcode"]),
     # Adobe Premiere/AE media cache (cfa/pek/peak) — big space, regenerates. Does NOT touch
     # Adobe CEP extension data (licenses) — that lives under Adobe/CEP, not Common/Media Cache.
     "adobe":   ("🎬", "Adobe Media Cache", "Premiere · After Effects",
@@ -313,13 +581,20 @@ CATEGORIES = {
 SCAN_DIRS = [HOME/"Downloads", HOME/"Desktop", HOME/"Documents", HOME/"Movies"]
 BIG_THRESHOLD = 100 * 1024 * 1024
 
-# ring segment + card accent per category — monochromatic maroon shades
-SEG = {"system":"#5E1622", "browser":"#8A2A38", "dev":"#B5606A", "adobe":"#C77B4A"}
+# ── Old installers in Downloads ─────────────────────────────────────────
+INSTALLER_EXT   = (".dmg", ".pkg", ".mpkg", ".iso")
+INSTALLER_AGE_D = 14          # only offer ones older than this — recent = probably still needed
+IOS_BACKUP_DIR  = HOME/"Library/Application Support/MobileSync/Backup"
+
+# ring segment + card accent per category — leaf→gold ramp (leaf-800/600/400, gold)
+SEG = {"system":"#2b6627", "browser":"#388837", "dev":"#4e9a49",
+       "apps":"#7bb36f", "adobe":"#c9922f"}
 
 CARD_HELP = {
     "system":  "App caches & log files macOS rebuilds automatically. Safe to delete — frees space, apps just re-cache.",
     "browser": "Cached web data for Chrome/Safari/Firefox. You stay logged in; pages just re-download once.",
     "dev":     "Build caches from npm, pip, Homebrew, Xcode. Safe — they regenerate on next build/install.",
+    "apps":    "Cache folders for Slack, Spotify, Zoom, Discord, Teams, Creative Cloud, Xcode. Contents only — you stay signed in, the app re-caches. Never touches their settings or data.",
     "adobe":   "Premiere/After Effects media cache (cfa/pek/peak files). Safe to clear — Adobe rebuilds them on next preview. Does NOT remove your extension licenses or settings.",
 }
 
@@ -336,7 +611,7 @@ class Tip:
         y = self.w.winfo_rooty() + self.w.winfo_height() + 6
         self.tip = tk.Toplevel(self.w); self.tip.wm_overrideredirect(True)
         self.tip.wm_geometry(f"+{x}+{y}")
-        tk.Label(self.tip, text=self.text, bg="#2c1014", fg="#ffffff", font=(UIFONT, 10),
+        tk.Label(self.tip, text=self.text, bg=C["TEXT"], fg="#ffffff", font=(UIFONT, 10),
                  padx=9, pady=6, justify="left", wraplength=280).pack()
     def _hide(self, _e):
         if self.tip: self.tip.destroy(); self.tip = None
@@ -346,6 +621,19 @@ class Tip:
 class Cleaner(tk.Tk):
     def __init__(self):
         super().__init__()
+        # Brand type is Outfit / Bricolage Grotesque; neither ships with macOS, so
+        # Inter (same humanist-geometric feel) comes first, system font backs it up.
+        global UIFONT, HEADFONT, MONO
+        UIFONT = _pick_family(["Inter", "Outfit", ".AppleSystemUIFont", "SF Pro Text",
+                               "SF Pro Display", "Helvetica Neue"], "SF Pro Text")
+        HEADFONT = _pick_family(["Bricolage Grotesque", "Outfit", "Inter",
+                                 "SF Pro Display", "Helvetica Neue"], UIFONT)
+        MONO   = _pick_family(["JetBrains Mono", "SF Mono", "Menlo"], "SF Mono")
+        try:
+            (Path.home()/".config/zhmaccleaner").mkdir(parents=True, exist_ok=True)
+            (Path.home()/".config/zhmaccleaner/fontcheck.txt").write_text(
+                f"UIFONT={UIFONT}\nHEADFONT={HEADFONT}\nMONO={MONO}\n")
+        except Exception: pass
         self.title("ZH MacCleaner")
         self.geometry("880x760"); self.resizable(False, False)   # fixed size — fits all buttons
         self.configure(bg=C["BG"])
@@ -386,7 +674,7 @@ class Cleaner(tk.Tk):
         name = tk.Frame(head, bg=C["HEADER"]); name.pack(side="left")
         titlerow = tk.Frame(name, bg=C["HEADER"]); titlerow.pack(anchor="w")
         tk.Label(titlerow, text="ZH MacCleaner", bg=C["HEADER"], fg=C["MAROON"],
-                 font=(UIFONT, 19, "bold")).pack(side="left")
+                 font=(HEADFONT, 20, "bold")).pack(side="left")
         tk.Label(titlerow, text=f"  v{APP_VERSION}", bg=C["HEADER"], fg=C["MUTED"],
                  font=(UIFONT, 11, "bold")).pack(side="left", pady=(6,0))
         tk.Label(name, text="keep your Mac clean", bg=C["HEADER"], fg=C["MUTED"],
@@ -400,14 +688,16 @@ class Cleaner(tk.Tk):
         side = tk.Frame(body, bg=C["SIDEBAR"], width=180); side.pack(side="left", fill="y"); side.pack_propagate(False)
         self.active_view = None
         nav = [("cleanup","Cleanup","🧹"), ("large","Large Files","📦"),
+               ("installers","Old Installers","📥"), ("iosbackup","iOS Backups","📱"),
                ("uninstall","Uninstaller","🗑️"), ("dupes","Duplicates","👯"),
-               ("maint","Maintenance","🛠"), ("license","Pro","⭐"), ("help","Help & About","ℹ️")]
+               ("maint","Maintenance","🛠"), ("settings","Settings","⚙️"),
+               ("license","Pro","⭐"), ("help","Help","ℹ️")]
         for key, label, ico in nav:
-            b = tk.Label(side, text=f"   {ico}   {label}", bg=C["SIDEBAR"], fg=C["TEXT"],
-                         font=(UIFONT, 13), anchor="w", cursor="pointinghand", padx=12, pady=11)
-            b.pack(fill="x", padx=8, pady=2)
+            b = tk.Label(side, text=f"  {ico}  {label}", bg=C["SIDEBAR"], fg=C["TEXT"],
+                         font=(UIFONT, 12), anchor="w", cursor="pointinghand", padx=12, pady=8)
+            b.pack(fill="x", padx=8, pady=1)
             b.bind("<Button-1>", lambda e,k=key: self.show_view(k))
-            b.bind("<Enter>", lambda e,k=key,w=b: (w.config(bg="#e3d0d4") if k!=self.active_view else None))
+            b.bind("<Enter>", lambda e,k=key,w=b: (w.config(bg="#d4f1cb") if k!=self.active_view else None))
             b.bind("<Leave>", lambda e,k=key,w=b: (w.config(bg=C["SIDEBAR"]) if k!=self.active_view else None))
             self.nav_btns[key] = b
         tk.Label(side, text=f"v{APP_VERSION} · safe mode", bg=C["SIDEBAR"], fg=C["BORDER"],
@@ -417,9 +707,12 @@ class Cleaner(tk.Tk):
         self.content = tk.Frame(body, bg=C["BG"]); self.content.pack(side="left", fill="both", expand=True)
         self._build_cleanup()
         self._build_large()
+        self._build_installers()
+        self._build_iosbackup()
         self._build_uninstaller()
         self._build_duplicates()
         self._build_maintenance()
+        self._build_settings()
         self._build_license()
         self._build_help()
 
@@ -445,21 +738,33 @@ class Cleaner(tk.Tk):
                      font=(UIFONT, 12, "bold")).grid(row=0, column=1, sticky="w", pady=(10,0))
             tk.Label(ban, text="Lets ZH MacCleaner read & clear all caches.", bg=C["SURF2"],
                      fg=C["MUTED"], anchor="w", font=(UIFONT, 10)).grid(row=1, column=1, sticky="w", pady=(0,10))
-            tk.Button(ban, text="Open Settings", command=self.open_fda, highlightbackground=C["SURF2"],
-                      fg=C["MAROON"], relief="flat", bd=0, padx=12, pady=5, cursor="pointinghand",
-                      font=(UIFONT, 11, "bold")).grid(row=0, column=2, rowspan=2, padx=12)
+            _chip(ban, "Open Settings", self.open_fda, "leaf").grid(row=0, column=2, rowspan=2, padx=12)
+
+        # ── pack the fixed chrome (buttons, foot) BEFORE the expanding middle, or
+        #    Tk's packer squeezes a side="bottom" widget out when content is tall. ──
+        bar = tk.Frame(v, bg=C["BG"]); bar.pack(fill="x", padx=22, pady=12, side="bottom")
+        self.rescan_btn = self._btn(bar, "↻  Rescan", self.scan_all, "ghost"); self.rescan_btn.pack(side="left")
+        self.clean_btn  = self._btn(bar, "✦  Clean Selected", self.clean_sel, "gold"); self.clean_btn.pack(side="left", padx=8)
+        self.trash_btn  = self._btn(bar, "🗑  Empty Trash", self.empty_trash, "ghost"); self.trash_btn.pack(side="right")
+
+        foot = tk.Frame(v, bg=C["BG"]); foot.pack(fill="x", padx=22, pady=(4,0), side="bottom")
+        self.trash_lbl = tk.Label(foot, text="🗑  Trash: …", bg=C["BG"], fg=C["MUTED"],
+                                  font=(UIFONT, 11)); self.trash_lbl.pack(side="left")
+        self.stat_lbl = tk.Label(foot, text="", bg=C["BG"], fg=C["MAROON2"],
+                                 font=(UIFONT, 11, "bold")); self.stat_lbl.pack(side="right")
+        self._refresh_stat()
 
         # Gauge
-        top = tk.Frame(v, bg=C["BG"]); top.pack(fill="x", pady=(12,4))
-        self.gauge = tk.Canvas(top, width=176, height=176, bg=C["BG"], highlightthickness=0)
+        top = tk.Frame(v, bg=C["BG"]); top.pack(fill="x", pady=(6,2))
+        self.gauge = tk.Canvas(top, width=150, height=150, bg=C["BG"], highlightthickness=0)
         self.gauge.pack()
         self._draw_gauge()
 
-        # Category cards
-        mid = tk.Frame(v, bg=C["BG"]); mid.pack(fill="both", expand=True, padx=22)
+        # Category cards — in a borderless scroller so they can never push the buttons off-screen
+        mid = self._scroller(v, bordered=False, bg=C["BG"])
         for key,(ico,name,sub,paths) in CATEGORIES.items():
             card = tk.Frame(mid, bg=C["SURF"], highlightbackground=C["BORDER"], highlightthickness=1)
-            card.pack(fill="x", pady=5); card.columnconfigure(3, weight=1)
+            card.pack(fill="x", pady=3); card.columnconfigure(3, weight=1)
             tk.Frame(card, bg=SEG[key], width=4).grid(row=0, column=0, rowspan=2, sticky="ns")  # accent bar
             var = tk.BooleanVar(value=True); self.vars[key] = var
             tk.Checkbutton(card, variable=var, bg=C["SURF"], selectcolor=C["MAROON"],
@@ -468,7 +773,7 @@ class Cleaner(tk.Tk):
             tk.Label(card, text=ico, bg=C["SURF"], font=(UIFONT, 18)
                      ).grid(row=0, column=2, rowspan=2, padx=6)
             tk.Label(card, text=name, bg=C["SURF"], fg=C["TEXT"], anchor="w",
-                     font=(UIFONT, 14, "bold")).grid(row=0, column=3, sticky="w", pady=(12,0))
+                     font=(HEADFONT, 14, "bold")).grid(row=0, column=3, sticky="w", pady=(12,0))
             tk.Label(card, text=sub, bg=C["SURF"], fg=C["MUTED"], anchor="w",
                      font=(UIFONT, 10)).grid(row=1, column=3, sticky="w", pady=(0,12))
             szl = tk.Label(card, text="…", bg=C["SURF"], fg=C["GOLD"],
@@ -478,15 +783,6 @@ class Cleaner(tk.Tk):
             for wdg in [card] + list(card.winfo_children()):
                 wdg.bind("<Enter>", lambda e,c=card: c.config(highlightbackground=C["MAROON2"]))
                 wdg.bind("<Leave>", lambda e,c=card: c.config(highlightbackground=C["BORDER"]))
-
-        self.trash_lbl = tk.Label(mid, text="🗑  Trash: …", bg=C["BG"], fg=C["MUTED"],
-                                  font=(UIFONT, 11)); self.trash_lbl.pack(anchor="w", pady=(8,0))
-
-        # Buttons
-        bar = tk.Frame(v, bg=C["BG"]); bar.pack(fill="x", padx=22, pady=14, side="bottom")
-        self.rescan_btn = self._btn(bar, "↻  Rescan", self.scan_all, "ghost"); self.rescan_btn.pack(side="left")
-        self.clean_btn  = self._btn(bar, "✦  Clean Selected", self.clean_sel, "gold"); self.clean_btn.pack(side="left", padx=8)
-        self.trash_btn  = self._btn(bar, "🗑  Empty Trash", self.empty_trash, "ghost"); self.trash_btn.pack(side="right")
 
     # ── Large files view ──
     def _build_large(self):
@@ -510,12 +806,7 @@ class Cleaner(tk.Tk):
         self.trash_sel_btn.pack(anchor="e", padx=22, pady=10)
 
     def _btn(self, parent, text, cmd, kind="gold"):
-        styles = {"gold":(C["GOLD"], "#3a2410"), "ghost":(C["SURF2"], C["TEXT"]),
-                  "danger":(C["RED"], "#fff")}
-        bg, fg = styles[kind]
-        return tk.Button(parent, text=text, command=cmd, bg=bg, fg=fg, relief="flat", bd=0,
-                         padx=16, pady=9, cursor="pointinghand", activebackground=C["GOLD2"],
-                         font=(UIFONT, 12, "bold"))
+        return RoundedButton(parent, text, cmd, kind=kind, font=(UIFONT, 12, "bold"))
 
     def open_fda(self):
         subprocess.run(["open",
@@ -524,8 +815,8 @@ class Cleaner(tk.Tk):
 
     def _draw_gauge(self, frac=None, total=None):
         g = self.gauge; g.delete("all")
-        x0,y0,x1,y1 = 16,16,160,160; cx,cy = 88,88
-        g.create_oval(x0,y0,x1,y1, outline=C["SURF2"], width=10)   # track
+        x0,y0,x1,y1 = 14,14,136,136; cx,cy = 75,75
+        g.create_oval(x0,y0,x1,y1, outline="#d4f1cb", width=9)   # track (leaf-100)
         real = sum(self.sizes.values())
         if frac is None:                      # final state — segmented ring
             if real > 0:
@@ -543,9 +834,9 @@ class Cleaner(tk.Tk):
                              style="arc", outline=C["MAROON"], width=10)
             shown = real if total is None else total
         txt = human(shown) if (real > 0 or total is not None) else "—"
-        fs = 23 if len(txt) <= 7 else (19 if len(txt) <= 9 else 16)
-        g.create_text(cx, cy-11, text=txt, fill=C["TEXT"], font=(UIFONT, fs, "bold"))
-        g.create_text(cx, cy+17, text="RECLAIMABLE", fill=C["MUTED"], font=(UIFONT, 9, "bold"))
+        fs = 20 if len(txt) <= 7 else (16 if len(txt) <= 9 else 14)
+        g.create_text(cx, cy-9, text=txt, fill=C["TEXT"], font=(HEADFONT, fs, "bold"))
+        g.create_text(cx, cy+15, text="RECLAIMABLE", fill=C["MUTED"], font=(UIFONT, 8, "bold"))
 
     def _animate_gauge(self):
         target = sum(self.sizes.values())
@@ -576,9 +867,11 @@ class Cleaner(tk.Tk):
         for v in self.views.values(): v.pack_forget()
         self.views[name].pack(fill="both", expand=True)
         if name == "uninstall": self.load_apps()
+        elif name == "installers" and not self.instl_files and not self.busy: self.scan_installers()
+        elif name == "settings": self._render_exclusions()
         for k,b in self.nav_btns.items():
-            if k == name: b.config(bg=C["MAROON"], fg="#ffffff", font=(UIFONT, 13, "bold"))
-            else:         b.config(bg=C["SIDEBAR"], fg=C["TEXT"], font=(UIFONT, 13))
+            if k == name: b.config(bg=C["MAROON"], fg="#ffffff", font=(UIFONT, 12, "bold"))
+            else:         b.config(bg=C["SIDEBAR"], fg=C["TEXT"], font=(UIFONT, 12))
 
     # ── queue pump ──
     def _pump(self):
@@ -589,8 +882,11 @@ class Cleaner(tk.Tk):
                 elif kind == "size":   self._set_size(*payload)
                 elif kind == "gauge":  self._draw_gauge()
                 elif kind == "trash":  self.trash_lbl.config(text=payload)
+                elif kind == "stat":   self._refresh_stat()
                 elif kind == "big":    self._render_big(payload)
                 elif kind == "busy":   self._set_busy(payload)
+                elif kind == "instl":  self._render_installers(payload)
+                elif kind == "iosbk":  self._render_iosbackup(payload)
                 elif kind == "apps":   self._render_apps(payload)
                 elif kind == "uninstall_confirm": self._confirm_uninstall(*payload)
                 elif kind == "dupes":  self._render_dupes(payload)
@@ -613,7 +909,8 @@ class Cleaner(tk.Tk):
     def _set_busy(self, b):
         self.busy = b
         st = "disabled" if b else "normal"
-        for x in ("rescan_btn","clean_btn","trash_btn","find_btn","trash_sel_btn"):
+        for x in ("rescan_btn","clean_btn","trash_btn","find_btn","trash_sel_btn",
+                  "instl_btn","trash_instl_btn","iosbk_btn","trash_iosbk_btn"):
             try: getattr(self, x).config(state=st)
             except Exception: pass
 
@@ -626,6 +923,12 @@ class Cleaner(tk.Tk):
     def _trash_size(self):
         threading.Thread(target=lambda: self.q.put(("trash", f"🗑  Trash: {human(dir_size(HOME/'.Trash'))}")),
                          daemon=True).start()
+
+    def _refresh_stat(self):
+        if not hasattr(self, "stat_lbl"): return
+        s = load_stats()
+        f = int(s.get("freed", 0))
+        self.stat_lbl.config(text=(f"♻  {human(f)} reclaimed all-time · {s.get('runs',0)} runs" if f else ""))
 
     # ── scan ──
     def scan_all(self):
@@ -687,9 +990,11 @@ class Cleaner(tk.Tk):
                                f"Adobe extension data is protected on purpose.")
                 else:
                     msg = f"✅ Cleaned. Freed {human(freed)}."
+                bump_stats(freed)
                 self.q.put(("status", msg))
                 self.q.put(("clean_done", freed))
                 self.q.put(("busy", False))
+                self.q.put(("stat", None))
                 self._trash_size()
         threading.Thread(target=run, daemon=True).start()
 
@@ -717,6 +1022,7 @@ class Cleaner(tk.Tk):
                     for fp in out.stdout.splitlines():
                         try:
                             if os.path.islink(fp): continue
+                            if path_protected(fp, hard=False): continue   # user's protected folders
                             st = os.stat(fp); found.append((fp, st.st_size, st.st_mtime))
                         except OSError: pass
                 except Exception as e:
@@ -750,10 +1056,8 @@ class Cleaner(tk.Tk):
             Tip(nml, fp)   # full path on hover — check before deleting
             tk.Label(row, text=f"{human(sz)} · {int((now-mt)/86400)}d", bg=C["SURF"], fg=C["GOLD"],
                      font=(MONO, 11)).grid(row=0, column=2, rowspan=2, sticky="e", padx=12)
-            tk.Button(row, text="↗ Reveal", command=lambda p=fp: self.reveal_in_finder(p),
-                      bg=C["SURF2"], fg=C["TEXT"], relief="flat", bd=0, padx=10, pady=3,
-                      cursor="pointinghand", font=(UIFONT, 10), activebackground=C["MAROON2"]
-                      ).grid(row=0, column=3, rowspan=2, padx=(4,8))
+            _chip(row, "↗ Reveal", lambda p=fp: self.reveal_in_finder(p), "ghost"
+                  ).grid(row=0, column=3, rowspan=2, padx=(4,8))
 
     def reveal_in_finder(self, path):
         """Open Finder with the file selected so the user can verify it before deleting."""
@@ -771,21 +1075,24 @@ class Cleaner(tk.Tk):
             f"Move {len(picks)} file(s) ({human(tot)}) to Trash?\nRecoverable from Trash."): return
         self.q.put(("busy", True))
         def run():
-            okp = [fp for fp in picks if move_to_trash(fp)]
+            okp = [fp for fp in picks if not path_protected(fp, hard=False) and move_to_trash(fp)]
             fail = len(picks) - len(okp)
+            bump_stats(sum(sz for fp,sz,_ in self.big_files if fp in okp))
             self.q.put(("big", [x for x in self.big_files if x[0] not in okp]))
             self.q.put(("status", f"✅ Moved {len(okp)} file(s) to Trash."
                         + (f" ⚠ {fail} couldn't be moved (in use / permission)." if fail else "")))
-            self.q.put(("busy", False)); self._trash_size()
+            self.q.put(("busy", False)); self.q.put(("stat", None)); self._trash_size()
         threading.Thread(target=run, daemon=True).start()
 
     # ══ scrollable list helper ══
-    def _scroller(self, parent):
-        wrap = tk.Frame(parent, bg=C["SURF"], highlightbackground=C["BORDER"], highlightthickness=1)
+    def _scroller(self, parent, bordered=True, bg=None):
+        bg = bg or C["SURF"]
+        wrap = tk.Frame(parent, bg=bg,
+                        highlightbackground=C["BORDER"], highlightthickness=1 if bordered else 0)
         wrap.pack(fill="both", expand=True, padx=22, pady=6)
-        cv = tk.Canvas(wrap, bg=C["SURF"], highlightthickness=0)
+        cv = tk.Canvas(wrap, bg=bg, highlightthickness=0)
         sb = tk.Scrollbar(wrap, orient="vertical", command=cv.yview)
-        inner = tk.Frame(cv, bg=C["SURF"])
+        inner = tk.Frame(cv, bg=bg)
         inner.bind("<Configure>", lambda e: cv.configure(scrollregion=cv.bbox("all")))
         win = cv.create_window((0,0), window=inner, anchor="nw")
         cv.bind("<Configure>", lambda e: cv.itemconfig(win, width=e.width))
@@ -795,9 +1102,204 @@ class Cleaner(tk.Tk):
 
     def _title(self, parent, text, sub=""):
         f = tk.Frame(parent, bg=C["BG"]); f.pack(fill="x", padx=22, pady=(18,4))
-        tk.Label(f, text=text, bg=C["BG"], fg=C["TEXT"], font=(UIFONT, 16, "bold")).pack(anchor="w")
+        tk.Label(f, text=text, bg=C["BG"], fg=C["TEXT"], font=(HEADFONT, 17, "bold")).pack(anchor="w")
         if sub: tk.Label(f, text=sub, bg=C["BG"], fg=C["MUTED"], font=(UIFONT, 10)).pack(anchor="w")
         return f
+
+    # ══ OLD INSTALLERS (in ~/Downloads) ══
+    def _build_installers(self):
+        v = tk.Frame(self.content, bg=C["BG"]); self.views["installers"] = v
+        f = self._title(v, "Old Installers",
+                        f".dmg / .pkg / .iso in Downloads older than {INSTALLER_AGE_D} days — the app's already installed")
+        self.instl_btn = self._btn(f, "🔍  Scan", self.scan_installers, "gold"); self.instl_btn.pack(side="right")
+        self.instl_inner = self._scroller(v)
+        self.instl_vars = {}
+        self.instl_files = []
+        self.trash_instl_btn = self._btn(v, "🗑  Move Selected to Trash", self.trash_installers, "gold")
+        self.trash_instl_btn.pack(anchor="e", padx=22, pady=10)
+
+    def scan_installers(self):
+        if self.busy: return
+        self.q.put(("busy", True)); self.q.put(("status", "Looking for old installers…"))
+        threading.Thread(target=lambda: (
+            self.q.put(("instl", find_old_installers())),
+            self.q.put(("busy", False))), daemon=True).start()
+
+    def _render_installers(self, found):
+        for w in self.instl_inner.winfo_children(): w.destroy()
+        self.instl_files = found; self.instl_vars = {}
+        if not found:
+            tk.Label(self.instl_inner, text="No old installers in Downloads. 🎉", bg=C["SURF"],
+                     fg=C["MUTED"], font=(UIFONT, 12)).pack(pady=24)
+            self.q.put(("status", "No old installers found.")); return
+        now = time.time()
+        for fp, sz, mt in found:
+            row = tk.Frame(self.instl_inner, bg=C["SURF"]); row.pack(fill="x", padx=6, pady=2)
+            row.columnconfigure(1, weight=1)
+            var = tk.BooleanVar(value=True); self.instl_vars[fp] = var
+            tk.Checkbutton(row, variable=var, bg=C["SURF"], selectcolor=C["MAROON"],
+                           activebackground=C["SURF"], bd=0, highlightthickness=0
+                           ).grid(row=0, column=0, sticky="w", padx=(4,6))
+            nm = os.path.basename(fp); disp = (nm[:46]+"…") if len(nm) > 47 else nm
+            nml = tk.Label(row, text=disp, bg=C["SURF"], fg=C["TEXT"], anchor="w",
+                           font=(UIFONT, 11)); nml.grid(row=0, column=1, sticky="w")
+            Tip(nml, fp)
+            tk.Label(row, text=f"{human(sz)} · {int((now-mt)/86400)}d old", bg=C["SURF"], fg=C["GOLD"],
+                     font=(MONO, 10)).grid(row=0, column=2, sticky="e", padx=10)
+            _chip(row, "↗", lambda p=fp: self.reveal_in_finder(p), "ghost"
+                  ).grid(row=0, column=3, padx=(2,8))
+        tot = sum(sz for _, sz, _ in found)
+        self.q.put(("status", f"{len(found)} old installer(s) · {human(tot)}. Uncheck any you still need."))
+
+    def trash_installers(self):
+        if self.busy: return
+        picks = [fp for fp, var in self.instl_vars.items() if var.get()]
+        if not picks:
+            messagebox.showinfo("ZH MacCleaner", "Nothing selected."); return
+        tot = sum(sz for fp, sz, _ in self.instl_files if fp in picks)
+        if not messagebox.askyesno("Move to Trash?",
+            f"Move {len(picks)} installer file(s) ({human(tot)}) to Trash?\n\n"
+            f"Only the .dmg/.pkg download is removed — the installed app is untouched. "
+            f"Recoverable from Trash."): return
+        self.q.put(("busy", True))
+        def run():
+            ok = [fp for fp in picks if not path_protected(fp) and move_to_trash(fp)]
+            bump_stats(sum(sz for fp, sz, _ in self.instl_files if fp in ok))
+            self.q.put(("instl", [x for x in self.instl_files if x[0] not in ok]))
+            self.q.put(("status", f"✅ Moved {len(ok)} installer(s) to Trash."
+                        + (f"  ⚠ {len(picks)-len(ok)} skipped (in use / protected)." if len(ok) != len(picks) else "")))
+            self.q.put(("busy", False)); self.q.put(("stat", None)); self._trash_size()
+        threading.Thread(target=run, daemon=True).start()
+
+    # ══ iOS / iPadOS BACKUPS ══
+    def _build_iosbackup(self):
+        v = tk.Frame(self.content, bg=C["BG"]); self.views["iosbackup"] = v
+        f = self._title(v, "iOS Backups",
+                        "Local iPhone / iPad backups made by Finder. Often 20–80 GB.")
+        self.iosbk_btn = self._btn(f, "🔍  Scan", self.scan_iosbackup, "gold"); self.iosbk_btn.pack(side="right")
+        warn = tk.Frame(v, bg=C["SURF2"]); warn.pack(fill="x", padx=22, pady=(0,4))
+        tk.Label(warn, text="⚠  Only delete a backup you don't need to restore from. "
+                 "iCloud backups are separate and are NOT affected.", bg=C["SURF2"], fg=C["MAROON"],
+                 font=(UIFONT, 10), wraplength=560, justify="left", anchor="w").pack(fill="x", padx=10, pady=6)
+        self.iosbk_inner = self._scroller(v)
+        self.iosbk_vars = {}
+        self.iosbk_items = []
+        self.trash_iosbk_btn = self._btn(v, "🗑  Move Selected to Trash", self.trash_iosbackup, "gold")
+        self.trash_iosbk_btn.pack(anchor="e", padx=22, pady=10)
+
+    def scan_iosbackup(self):
+        if self.busy: return
+        self.q.put(("busy", True)); self.q.put(("status", "Measuring iOS backups…"))
+        threading.Thread(target=lambda: (
+            self.q.put(("iosbk", find_ios_backups())),
+            self.q.put(("busy", False))), daemon=True).start()
+
+    def _render_iosbackup(self, items):
+        for w in self.iosbk_inner.winfo_children(): w.destroy()
+        self.iosbk_items = items; self.iosbk_vars = {}
+        if not items:
+            tk.Label(self.iosbk_inner, text="No local iOS backups on this Mac.", bg=C["SURF"],
+                     fg=C["MUTED"], font=(UIFONT, 12)).pack(pady=24)
+            self.q.put(("status", "No iOS backups found.")); return
+        for bp, sz, name, when in items:
+            row = tk.Frame(self.iosbk_inner, bg=C["SURF"]); row.pack(fill="x", padx=6, pady=3)
+            row.columnconfigure(1, weight=1)
+            var = tk.BooleanVar(value=False); self.iosbk_vars[bp] = var   # default OFF — precious
+            tk.Checkbutton(row, variable=var, bg=C["SURF"], selectcolor=C["MAROON"],
+                           activebackground=C["SURF"], bd=0, highlightthickness=0
+                           ).grid(row=0, column=0, rowspan=2, sticky="w", padx=(4,6))
+            tk.Label(row, text=name, bg=C["SURF"], fg=C["TEXT"], anchor="w",
+                     font=(UIFONT, 11, "bold")).grid(row=0, column=1, sticky="w")
+            tk.Label(row, text=(f"last backup {when}" if when else "date unknown"), bg=C["SURF"],
+                     fg=C["MUTED"], anchor="w", font=(UIFONT, 9)).grid(row=1, column=1, sticky="w")
+            tk.Label(row, text=human(sz), bg=C["SURF"], fg=C["GOLD"],
+                     font=(MONO, 11, "bold")).grid(row=0, column=2, rowspan=2, sticky="e", padx=12)
+        tot = sum(sz for _, sz, _, _ in items)
+        self.q.put(("status", f"{len(items)} backup(s) · {human(tot)} total."))
+
+    def trash_iosbackup(self):
+        if self.busy: return
+        picks = [bp for bp, var in self.iosbk_vars.items() if var.get()]
+        if not picks:
+            messagebox.showinfo("ZH MacCleaner", "Nothing selected."); return
+        tot = sum(sz for bp, sz, _, _ in self.iosbk_items if bp in picks)
+        names = "\n".join("• " + n for bp, _, n, _ in self.iosbk_items if bp in picks)
+        if not messagebox.askyesno("Delete iOS backup?",
+            f"Move {len(picks)} device backup(s) to Trash?\n\n{names}\n\n≈ {human(tot)}. "
+            f"You will NOT be able to restore this iPhone/iPad from it afterwards "
+            f"(unless you recover it from Trash first).\n\nContinue?"): return
+        self.q.put(("busy", True))
+        def run():
+            ok = []
+            for bp in picks:
+                if bp.rstrip("/").startswith(str(IOS_BACKUP_DIR)) and not path_protected(bp, hard=False) \
+                   and move_to_trash(bp):
+                    ok.append(bp)
+            bump_stats(sum(sz for bp, sz, _, _ in self.iosbk_items if bp in ok))
+            self.q.put(("iosbk", [x for x in self.iosbk_items if x[0] not in ok]))
+            self.q.put(("status", f"✅ Moved {len(ok)} backup(s) to Trash."
+                        + (f"  ⚠ {len(picks)-len(ok)} skipped." if len(ok) != len(picks) else "")))
+            self.q.put(("busy", False)); self.q.put(("stat", None)); self._trash_size()
+        threading.Thread(target=run, daemon=True).start()
+
+    # ══ SETTINGS (exclusions + stats) ══
+    def _build_settings(self):
+        v = tk.Frame(self.content, bg=C["BG"]); self.views["settings"] = v
+        self._title(v, "Settings", "Protect folders from every scan")
+        inner = self._scroller(v)
+        tk.Label(inner, text="Protected folders", bg=C["SURF"], fg=C["TEXT"], anchor="w",
+                 font=(UIFONT, 12, "bold")).pack(fill="x", padx=14, pady=(14,2))
+        tk.Label(inner, text="ZH Cleaner will never list or delete anything inside these — "
+                 "in Large Files, Duplicates, Installers or any other scan.",
+                 bg=C["SURF"], fg=C["MUTED"], anchor="w", justify="left", font=(UIFONT, 10),
+                 wraplength=520).pack(fill="x", padx=14, pady=(0,8))
+        self.excl_inner = tk.Frame(inner, bg=C["SURF"]); self.excl_inner.pack(fill="x", padx=14)
+        _chip(inner, "＋  Add folder…", self._add_exclusion, "leaf").pack(anchor="w", padx=14, pady=12)
+
+        tk.Frame(inner, bg=C["BORDER"], height=1).pack(fill="x", padx=14, pady=8)
+        tk.Label(inner, text="Lifetime stats", bg=C["SURF"], fg=C["TEXT"], anchor="w",
+                 font=(UIFONT, 12, "bold")).pack(fill="x", padx=14, pady=(6,2))
+        self.stats_detail = tk.Label(inner, text="", bg=C["SURF"], fg=C["MUTED"], anchor="w",
+                                     font=(UIFONT, 11), justify="left")
+        self.stats_detail.pack(fill="x", padx=14, pady=(0,4))
+        _chip(inner, "Reset counter", self._reset_stats, "ghost").pack(anchor="w", padx=14, pady=(4,16))
+        self._render_exclusions()
+
+    def _render_exclusions(self):
+        for w in self.excl_inner.winfo_children(): w.destroy()
+        paths = load_settings().get("exclusions", [])
+        if not paths:
+            tk.Label(self.excl_inner, text="Nothing protected yet.", bg=C["SURF"], fg=C["MUTED"],
+                     font=(UIFONT, 10)).pack(anchor="w", pady=4)
+        for p in paths:
+            row = tk.Frame(self.excl_inner, bg=C["SURF"]); row.pack(fill="x", pady=2)
+            row.columnconfigure(0, weight=1)
+            tk.Label(row, text=p.replace(str(HOME), "~"), bg=C["SURF"], fg=C["TEXT"], anchor="w",
+                     font=(UIFONT, 10)).grid(row=0, column=0, sticky="w")
+            _chip(row, "Remove", lambda x=p: self._remove_exclusion(x), "ghost").grid(row=0, column=1)
+        s = load_stats()
+        if hasattr(self, "stats_detail"):
+            self.stats_detail.config(text=f"Space reclaimed:  {human(int(s.get('freed',0)))}\n"
+                                          f"Cleanups run:  {s.get('runs',0)}")
+
+    def _add_exclusion(self):
+        from tkinter import filedialog
+        d = filedialog.askdirectory(title="Protect a folder from ZH Cleaner", initialdir=str(HOME))
+        if not d: return
+        s = load_settings(); ex = s.get("exclusions", [])
+        if d not in ex: ex.append(d); s["exclusions"] = ex; save_settings(s)
+        self._render_exclusions()
+        self.q.put(("status", f"Protected: {d.replace(str(HOME),'~')}"))
+
+    def _remove_exclusion(self, p):
+        s = load_settings(); ex = [x for x in s.get("exclusions", []) if x != p]
+        s["exclusions"] = ex; save_settings(s); self._render_exclusions()
+
+    def _reset_stats(self):
+        if not messagebox.askyesno("Reset", "Reset the lifetime space-reclaimed counter to zero?"): return
+        try: STATS_FILE.write_text(json.dumps({"freed": 0, "runs": 0}))
+        except Exception: pass
+        self._render_exclusions(); self._refresh_stat()
 
     # ══ UNINSTALLER ══
     def _build_uninstaller(self):
@@ -823,9 +1325,8 @@ class Cleaner(tk.Tk):
             row.columnconfigure(0, weight=1)
             tk.Label(row, text=nm, bg=C["SURF"], fg=C["TEXT"], anchor="w",
                      font=(UIFONT, 12)).grid(row=0, column=0, sticky="w", pady=4)
-            tk.Button(row, text="Uninstall", command=lambda n=nm,p=path: self.uninstall_app(n,p),
-                      bg=C["SURF2"], fg=C["MAROON"], relief="flat", bd=0, padx=10, pady=3,
-                      cursor="pointinghand", font=(UIFONT, 10, "bold")).grid(row=0, column=1, padx=6)
+            _chip(row, "Uninstall", lambda n=nm,p=path: self.uninstall_app(n,p), "ghost"
+                  ).grid(row=0, column=1, padx=6)
 
     def uninstall_app(self, name, path):
         if self.busy: return
@@ -842,12 +1343,18 @@ class Cleaner(tk.Tk):
         if not messagebox.askyesno("Uninstall app?", msg): return
         self.q.put(("busy", True)); self.q.put(("status", f"Uninstalling {name}…"))
         def run():
-            fails = []
-            if not move_to_trash(path): fails.append(path)
+            fails = []; freed = 0
+            asz = dir_size(path)
+            if move_to_trash(path): freed += asz
+            else: fails.append(path)
             done = 0
             for p in left:
-                if move_to_trash(str(p)): done += 1
+                if path_protected(str(p), hard=False): continue
+                psz = dir_size(p)
+                if move_to_trash(str(p)): done += 1; freed += psz
                 else: fails.append(str(p))
+            bump_stats(freed)
+            self.q.put(("stat", None))
             if fails:
                 app_stuck = path in fails
                 why = ("quit “%s” if it's still running, then retry" % name) if app_stuck \
@@ -913,11 +1420,17 @@ class Cleaner(tk.Tk):
             f"Move {len(picks)} duplicate file(s) to Trash?\nRecoverable from Trash."): return
         self.q.put(("busy", True))
         def run():
-            ok = sum(1 for p in picks if move_to_trash(p))
+            freed = 0; ok = 0
+            for p in picks:
+                if path_protected(p, hard=False): continue
+                try: sz = os.path.getsize(p)
+                except OSError: sz = 0
+                if move_to_trash(p): ok += 1; freed += sz
             fail = len(picks) - ok
+            bump_stats(freed)
             self.q.put(("status", f"✅ {ok} duplicate(s) → Trash."
                         + (f" ⚠ {fail} couldn't be moved (in use / permission)." if fail else "")))
-            self.q.put(("busy", False)); self._trash_size()
+            self.q.put(("busy", False)); self.q.put(("stat", None)); self._trash_size()
             self.q.put(("rescan_dupes", None))
         threading.Thread(target=run, daemon=True).start()
 
@@ -939,15 +1452,25 @@ class Cleaner(tk.Tk):
             ("🚀", "Rebuild Launch DB", "fix Open With duplicates",
              "Rebuilds the app database. Fixes duplicate or wrong entries in the “Open With” menu.",
              lambda: self.maint("/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -kill -r -domain local -domain user", "Rebuild Launch Services", admin=False)),
+            ("📱", "Clean Simulators", "Xcode: unavailable sims",
+             "Removes iOS Simulators for runtimes you no longer have (xcrun simctl delete unavailable) and shuts running ones down. Xcode re-creates any it needs.",
+             lambda: self.maint("/usr/bin/xcrun simctl shutdown all; /usr/bin/xcrun simctl delete unavailable", "Clean Simulators", admin=False)),
+            ("🧰", "Trim DeviceSupport", "Xcode: old iOS symbols",
+             "Moves ~/Library/Developer/Xcode/*DeviceSupport to the Trash (recoverable). Xcode rebuilds it the next time you plug that device in. Often several GB.",
+             lambda: self.clean_devicesupport()),
+            ("🐳", "Docker Prune", "unused images + build cache",
+             "Runs `docker system prune -af` — removes stopped containers, unused images/networks and build cache. Does NOT remove named volumes (your data).",
+             lambda: self.docker_prune()),
         ]
         for i,(ico,name,sub,tip,cmd) in enumerate(tools):
             card = tk.Frame(grid, bg=C["SURF"], highlightbackground=C["BORDER"], highlightthickness=1)
-            card.grid(row=i//2, column=i%2, sticky="nsew", padx=6, pady=6)
+            card.grid(row=i//2, column=i%2, sticky="nsew", padx=5, pady=4)
             grid.columnconfigure(i%2, weight=1)
-            tk.Label(card, text=ico, bg=C["SURF"], font=(UIFONT, 22)).pack(pady=(12,2))
-            tk.Label(card, text=name, bg=C["SURF"], fg=C["TEXT"], font=(UIFONT, 13, "bold")).pack()
-            tk.Label(card, text=sub, bg=C["SURF"], fg=C["MUTED"], font=(UIFONT, 9)).pack()
-            self._btn(card, "Run", cmd, "gold").pack(pady=10)
+            hd = tk.Frame(card, bg=C["SURF"]); hd.pack(fill="x", padx=12, pady=(10,0))
+            tk.Label(hd, text=ico, bg=C["SURF"], font=(UIFONT, 16)).pack(side="left")
+            tk.Label(hd, text=name, bg=C["SURF"], fg=C["TEXT"], font=(HEADFONT, 12, "bold")).pack(side="left", padx=6)
+            tk.Label(card, text=sub, bg=C["SURF"], fg=C["MUTED"], font=(UIFONT, 9), anchor="w").pack(fill="x", padx=12, pady=(1,0))
+            self._btn(card, "Run", cmd, "gold").pack(anchor="w", padx=12, pady=8)
             Tip(card, tip)
 
     def maint(self, cmd, label, admin=True):
@@ -979,6 +1502,60 @@ class Cleaner(tk.Tk):
 
     def _maint_done(self, label, ok, detail):
         (messagebox.showinfo if ok else messagebox.showwarning)("ZH MacCleaner — " + label, detail)
+
+    def clean_devicesupport(self):
+        if self.busy: return
+        dirs = [HOME/"Library/Developer/Xcode/iOS DeviceSupport",
+                HOME/"Library/Developer/Xcode/watchOS DeviceSupport",
+                HOME/"Library/Developer/Xcode/tvOS DeviceSupport"]
+        entries = []
+        for d in dirs:
+            if d.is_dir():
+                for e in os.listdir(d): entries.append(d/e)
+        if not entries:
+            messagebox.showinfo("ZH MacCleaner", "No Xcode DeviceSupport folders found."); return
+        tot = sum(dir_size(p) for p in entries)
+        if not messagebox.askyesno("Trim DeviceSupport?",
+            f"Move {len(entries)} DeviceSupport folder(s) ({human(tot)}) to Trash?\n\n"
+            f"Recoverable. Xcode rebuilds each one the next time you connect that device."): return
+        self.q.put(("busy", True)); self.q.put(("status", "Trimming Xcode DeviceSupport…"))
+        def run():
+            freed = 0
+            for p in entries:
+                sp = str(p)
+                if not sp.startswith(str(HOME/"Library/Developer/Xcode")): continue
+                sz = dir_size(p)
+                if move_to_trash(sp): freed += sz
+            bump_stats(freed)
+            self.q.put(("maint_done", ("Trim DeviceSupport", True, f"✅ Moved {human(freed)} to Trash.")))
+            self.q.put(("status", f"✅ DeviceSupport trimmed — {human(freed)}."))
+            self.q.put(("busy", False)); self.q.put(("stat", None)); self._trash_size()
+        threading.Thread(target=run, daemon=True).start()
+
+    def docker_prune(self):
+        if self.busy: return
+        if not messagebox.askyesno("Docker Prune?",
+            "Run `docker system prune -af`?\n\nRemoves stopped containers, unused images, "
+            "unused networks and all build cache. Named volumes (your data) are kept.\n\n"
+            "Docker Desktop must be running."): return
+        self.q.put(("busy", True)); self.q.put(("status", "Pruning Docker…"))
+        def run():
+            docker = shutil.which("docker") or next(
+                (p for p in ("/usr/local/bin/docker", "/opt/homebrew/bin/docker",
+                             "/Applications/Docker.app/Contents/Resources/bin/docker") if os.path.exists(p)), None)
+            if not docker:
+                self.q.put(("maint_done", ("Docker Prune", False, "docker command not found — is Docker installed?")))
+                self.q.put(("status", "⚠ Docker not found.")); self.q.put(("busy", False)); return
+            r = subprocess.run([docker, "system", "prune", "-af"], capture_output=True, text=True)
+            ok = r.returncode == 0
+            out = (r.stdout or r.stderr).strip()
+            m = re.search(r"Total reclaimed space:\s*(.+)", out)
+            detail = (f"✅ {m.group(1).strip()} reclaimed." if (ok and m)
+                      else (f"✅ Done.\n\n{out[-200:]}" if ok else f"⚠ Failed.\n\n{out[-200:] or 'Is Docker Desktop running?'}"))
+            self.q.put(("maint_done", ("Docker Prune", ok, detail)))
+            self.q.put(("status", f"{'✅' if ok else '⚠'} Docker prune {'done' if ok else 'failed'}."))
+            self.q.put(("busy", False))
+        threading.Thread(target=run, daemon=True).start()
 
     # ══ LICENSE / PRO ══
     def is_pro(self):
@@ -1131,7 +1708,7 @@ class Cleaner(tk.Tk):
                  cursor="pointinghand").pack(side="left")
         tk.Label(btns, text="No thanks", bg=C["BG"], fg=C["MUTED"], font=(UIFONT, 10),
                  cursor="pointinghand").pack(side="left", padx=14)
-        send = tk.Label(btns, text="  Post review  ", bg=C["GOLD"], fg="#fff", font=(UIFONT, 11, "bold"),
+        send = tk.Label(btns, text="  Post review  ", bg=C["GOLD"], fg=ON_GOLD, font=(UIFONT, 11, "bold"),
                         cursor="pointinghand", padx=6, pady=7); send.pack(side="right")
         send.bind("<Button-1>", lambda e: submit())
         btns.winfo_children()[0].bind("<Button-1>", lambda e: later())
@@ -1160,7 +1737,7 @@ class Cleaner(tk.Tk):
                                 font=(UIFONT, 12, "bold"), wraplength=520, justify="left")
         self.lic_ctx.pack(fill="x", padx=14, pady=(14,0))
         tk.Label(inner, text="ZH MacCleaner Pro", bg=C["SURF"], fg=C["TEXT"],
-                 font=(UIFONT, 18, "bold")).pack(anchor="w", padx=14, pady=(8,2))
+                 font=(HEADFONT, 18, "bold")).pack(anchor="w", padx=14, pady=(8,2))
         self.lic_status = tk.Label(inner, text="", bg=C["SURF"], anchor="w", font=(UIFONT, 12, "bold"))
         self.lic_status.pack(fill="x", padx=14, pady=(0,8))
 
@@ -1237,12 +1814,12 @@ class Cleaner(tk.Tk):
         inner = self._scroller(v)
         def section(title, body):
             tk.Label(inner, text=title, bg=C["SURF"], fg=C["MAROON"], anchor="w",
-                     font=(UIFONT, 13, "bold")).pack(fill="x", padx=14, pady=(12,2))
+                     font=(HEADFONT, 13, "bold")).pack(fill="x", padx=14, pady=(12,2))
             tk.Label(inner, text=body, bg=C["SURF"], fg=C["TEXT"], anchor="w", justify="left",
                      font=(UIFONT, 11), wraplength=520).pack(fill="x", padx=14, pady=(0,4))
 
         tk.Label(inner, text="What is ZH MacCleaner?", bg=C["SURF"], fg=C["TEXT"],
-                 font=(UIFONT, 16, "bold")).pack(anchor="w", padx=14, pady=(14,2))
+                 font=(HEADFONT, 16, "bold")).pack(anchor="w", padx=14, pady=(14,2))
         tk.Label(inner, text="A safe, simple Mac cleaner. It frees disk space by removing junk that "
                  "your Mac rebuilds automatically — and never touches system files.",
                  bg=C["SURF"], fg=C["MUTED"], anchor="w", justify="left",
@@ -1252,6 +1829,11 @@ class Cleaner(tk.Tk):
                 "own — safe to remove. Tick what you want and press “Clean Selected”.")
         section("📦  Large Files", "Finds files over 100 MB in Downloads, Desktop, Documents & Movies. "
                 "Pick the ones you don't need — they go to the Trash (recoverable).")
+        section("📥  Old Installers", "Finds .dmg / .pkg / .iso in Downloads older than two weeks — "
+                "the app is already installed, so the download is just wasted space. Only the installer "
+                "file is trashed, never the installed app.")
+        section("📱  iOS Backups", "Local iPhone / iPad backups made by Finder — often tens of GB. "
+                "Delete one only if you won't need to restore that device from it. iCloud backups are separate.")
         section("🗑️  Uninstaller", "Removes an app AND its leftover files (caches, preferences, support "
                 "folders) that normally stay behind when you drag an app to the Trash.")
         section("👯  Duplicates", "Finds identical files (same content). Keeps the first copy, lets you "
@@ -1260,12 +1842,20 @@ class Cleaner(tk.Tk):
                 "•  Free Up RAM — purges inactive memory so apps get more free RAM. Use when your Mac feels slow.\n"
                 "•  Flush DNS — clears the DNS cache. Fixes sites that won't load or point to an old server.\n"
                 "•  Reindex Spotlight — rebuilds the search index. Fixes Spotlight missing files or wrong results.\n"
-                "•  Rebuild Launch DB — fixes duplicate or wrong “Open With” app entries.\n\n"
+                "•  Rebuild Launch DB — fixes duplicate or wrong “Open With” app entries.\n"
+                "•  Clean Simulators — removes Xcode iOS Simulators for runtimes you no longer have.\n"
+                "•  Trim DeviceSupport — trashes old Xcode iOS symbol folders (rebuilt on next device connect).\n"
+                "•  Docker Prune — `docker system prune -af`: unused images, stopped containers, build cache. Volumes kept.\n\n"
                 "Some ask for your Mac password (normal for system tasks). You get a popup with the result.")
+        section("⚙️  Settings", "Add any folder to “Protected folders” and ZH Cleaner will never list or "
+                "delete anything inside it — in any scan. The Settings screen also shows how much space "
+                "you've reclaimed over the life of the app.")
 
-        section("🔒  Is it safe?", "Yes. ZH MacCleaner only touches a fixed list of safe user folders. "
-                "Caches/logs are rebuilt by macOS; your own files go to the Trash so you can restore them. "
-                "It never deletes documents, photos or system files.")
+        section("🔒  Is it safe?", "Yes. ZH MacCleaner only touches a fixed list of safe user folders, plus "
+                "the pattern-matched scans (installers, backups) which each show you every item and let you "
+                "uncheck it before anything moves. Your own files go to the Trash so you can restore them. "
+                "It never deletes documents, photos, iCloud Drive or system files — and anything you add to "
+                "Protected folders is skipped everywhere.")
         section("💡  Seeing small cache sizes?", "Grant Full Disk Access so it can read all caches: "
                 "System Settings → Privacy & Security → Full Disk Access → + → add ZH MacCleaner.")
 
@@ -1275,7 +1865,7 @@ class Cleaner(tk.Tk):
             tk.Label(brand, image=self.logo_img, bg=C["SURF"]).pack(side="left", padx=(0,10))
         col = tk.Frame(brand, bg=C["SURF"]); col.pack(side="left")
         tk.Label(col, text=f"ZH MacCleaner  ·  v{APP_VERSION}", bg=C["SURF"], fg=C["MAROON"],
-                 font=(UIFONT, 12, "bold")).pack(anchor="w")
+                 font=(HEADFONT, 12, "bold")).pack(anchor="w")
         tk.Label(col, text="Made by ZH Motions", bg=C["SURF"], fg=C["MUTED"],
                  font=(UIFONT, 10)).pack(anchor="w")
         link = tk.Label(col, text="zhmotions.com", bg=C["SURF"], fg=C["MAROON2"],
